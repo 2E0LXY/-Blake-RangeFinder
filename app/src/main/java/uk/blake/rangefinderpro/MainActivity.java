@@ -69,7 +69,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     }
     private void line(LinearLayout parent,String value){parent.addView(text(value,15,WHITE,false));gap(parent,8);}
     private Button button(LinearLayout parent,String name,Runnable run,boolean secondary){
-        Button b=new Button(this);b.setText(name);b.setTextAllCaps(false);b.setTextColor(WHITE);b.setTextSize(14);
+        Button b=new Button(this);b.setText(name);b.setAllCaps(false);b.setTextColor(WHITE);b.setTextSize(14);
         b.setBackground(bg(secondary?BORDER:BLUE,10));b.setOnClickListener(v->run.run());
         LinearLayout.LayoutParams p=lp(-1,48);p.bottomMargin=dp(8);parent.addView(b,p);return b;
     }
