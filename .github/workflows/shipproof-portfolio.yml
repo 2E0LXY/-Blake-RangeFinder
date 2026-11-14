@@ -1,0 +1,20 @@
+name: ShipProof RangeFinder Portfolio Gate
+
+# Read-only inventory gate: does not verify user interface, APK installation, or BLE hardware.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '19 5 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  shipproof:
+    name: Repository inventory and credential exposure review
+    uses: 2E0LXY/Advanced-IP-Analyser/.github/workflows/shipproof-portfolio-reusable.yml@a6f19df261bbbe95b3abdf1302f93eac784a8b3a
+    permissions:
+      contents: read
