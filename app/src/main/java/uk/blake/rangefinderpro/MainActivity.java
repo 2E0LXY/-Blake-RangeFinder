@@ -37,8 +37,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
 
     @Override public void onCreate(Bundle b){
         super.onCreate(b);
-        getWindow().setStatusBarColor(NAVY);
-        getWindow().setNavigationBarColor(NAVY);
+        configureSystemBars();
         store=new ProjectStore(this);ble=new BleClient(this,this);
         reconnect=getPreferences(MODE_PRIVATE).getBoolean("reconnect",true);ble.setReconnect(reconnect);
         String uri=getPreferences(MODE_PRIVATE).getString("photo_uri","");
@@ -47,6 +46,49 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         render();
     }
     @Override protected void onDestroy(){ble.close();super.onDestroy();}
+
+    /**
+     * API 35 enforces edge-to-edge. Opt in consistently on older Android as well,
+     * then explicitly reserve the status bar, display cutout and navigation/IME insets.
+     * This keeps our bottom tabs ABOVE both three-button and gesture navigation.
+     */
+    private void configureSystemBars(){
+        Window window=getWindow();
+        window.setStatusBarColor(NAVY);
+        window.setNavigationBarColor(NAVY);
+        if(Build.VERSION.SDK_INT>=30){
+            window.setDecorFitsSystemWindows(false);
+        }else{
+            window.getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+        if(Build.VERSION.SDK_INT>=29)window.setNavigationBarContrastEnforced(false);
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+    }
+
+    private void attachSafeAreaInsets(View container){
+        container.setOnApplyWindowInsetsListener((view,insets)->{
+            int left,top,right,bottom;
+            if(Build.VERSION.SDK_INT>=30){
+                android.graphics.Insets bars=insets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                android.graphics.Insets keyboard=insets.getInsets(WindowInsets.Type.ime());
+                left=bars.left;top=bars.top;right=bars.right;
+                bottom=SafeArea.bottomInset(bars.bottom,keyboard.bottom);
+            }else{
+                left=insets.getSystemWindowInsetLeft();
+                top=insets.getSystemWindowInsetTop();
+                right=insets.getSystemWindowInsetRight();
+                bottom=insets.getSystemWindowInsetBottom();
+            }
+            view.setPadding(left,top,right,bottom);
+            return insets; // Keep dispatching insets to children.
+        });
+        container.requestApplyInsets();
+    }
+
     private int dp(float n){return Math.round(getResources().getDisplayMetrics().density*n);}
     private GradientDrawable bg(int color,int radius){
         GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;
@@ -94,11 +136,12 @@ public final class MainActivity extends Activity implements BleClient.Callback {
 
     private void render(){
         root=vertical();root.setBackgroundColor(NAVY);setContentView(root);
+        attachSafeAreaInsets(root);
         LinearLayout header=horizontal();pad(header,17,9);
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.1.0 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.1.1 beta",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setVerticalScrollBarEnabled(false);
@@ -112,14 +155,31 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             case "Photo":showPhoto();break;
             default:showMeasure();
         }
-        HorizontalScrollView bottom=new HorizontalScrollView(this);bottom.setHorizontalScrollBarEnabled(false);
-        bottom.setBackgroundColor(CARD);LinearLayout nav=horizontal();
-        for(String p:new String[]{"Measure","Projects","Plan","Tools","Photo","Settings"}){
-            Button b=new Button(this);b.setText(p);b.setTextSize(12);b.setAllCaps(false);
-            b.setTextColor(p.equals(page)?GREEN:WHITE);b.setBackgroundColor(CARD);
-            b.setOnClickListener(v->{page=p;render();});nav.addView(b,lp(100,54));
+        // Five equal-width navigation tabs fit without horizontal scrolling.
+        // Tools and Settings remain accessible under More.
+        LinearLayout nav=horizontal();
+        nav.setBackgroundColor(CARD);
+        nav.setPadding(dp(5),dp(3),dp(5),dp(3));
+        for(String p:new String[]{"Measure","Projects","Plan","Photo","More"}){
+            boolean active=p.equals(page) || ("More".equals(p) &&
+                ("Tools".equals(page) || "Settings".equals(page)));
+            TextView tab=text(p,11,active?WHITE:MUTED,active);
+            tab.setGravity(Gravity.CENTER);
+            tab.setBackground(bg(active?BLUE:CARD,10));
+            tab.setContentDescription(p+" tab");
+            LinearLayout.LayoutParams item=new LinearLayout.LayoutParams(0,dp(52),1);
+            item.leftMargin=dp(2);item.rightMargin=dp(2);
+            nav.addView(tab,item);
+            tab.setOnClickListener(v->{
+                if("More".equals(p)){
+                    new AlertDialog.Builder(this).setTitle("More")
+                        .setItems(new String[]{"Measurement tools","Settings & export"},
+                            (dialog,index)->{page=index==0?"Tools":"Settings";render();})
+                        .show();
+                }else{page=p;render();}
+            });
         }
-        bottom.addView(nav);root.addView(bottom,lp(-1,56));
+        root.addView(nav,lp(-1,58));
     }
 
     private void showMeasure(){
