@@ -34,7 +34,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private final StringBuilder log=new StringBuilder();
     private byte[] pendingFile;
     private Uri photoUri;
-    private String photoLabel="1.234 m";
+    private String photoLabel="";private Bitmap photoBmp;private final String[] photoVals={"","",""};private int photoSel=0;
     private EditText lengthInput,widthInput;
     private boolean reconnect=true;
     private final Handler ui=new Handler(Looper.getMainLooper());
@@ -56,7 +56,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         reconnect=getPreferences(MODE_PRIVATE).getBoolean("reconnect",true);ble.setReconnect(reconnect);
         String uri=getPreferences(MODE_PRIVATE).getString("photo_uri","");
         if(!uri.isEmpty())photoUri=Uri.parse(uri);
-        photoLabel=getPreferences(MODE_PRIVATE).getString("photo_label",photoLabel);
+        photoLabel=getPreferences(MODE_PRIVATE).getString("photo_caption","");
         render();
     }
     @Override protected void onResume(){super.onResume();ui.removeCallbacks(autoTick);ui.postDelayed(autoTick,400);}
@@ -576,51 +576,174 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
     }
 
-    private void showPhoto(){
-        section("Photo annotation");LinearLayout c=card(content);label(c,"Photo + measurement caption");
-        line(c,"Select a photo, add a dimension and export an annotated JPEG.");
-        if(photoUri!=null){
-            try{
-                ImageView iv=new ImageView(this);
-                iv.setAdjustViewBounds(true);iv.setImageURI(photoUri);c.addView(iv,lp(-1,230));
-            }catch(Exception ignored){}
+    // ---------- Photo annotation ----------
+    private static final String[] DIM_NAMES={"Width","Height","Depth"};
+    private Bitmap loadPhoto(int maxSide)throws IOException{
+        BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;
+        try(InputStream in=getContentResolver().openInputStream(photoUri)){BitmapFactory.decodeStream(in,null,bounds);}
+        int sample=1;
+        while(Math.max(bounds.outWidth,bounds.outHeight)/sample>maxSide)sample*=2;
+        BitmapFactory.Options opts=new BitmapFactory.Options();opts.inSampleSize=sample;
+        Bitmap b;
+        try(InputStream in=getContentResolver().openInputStream(photoUri)){b=BitmapFactory.decodeStream(in,null,opts);}
+        if(b==null)throw new IOException("Unable to read photo");
+        int rot=0;
+        try(InputStream in=getContentResolver().openInputStream(photoUri)){
+            int ori=new android.media.ExifInterface(in).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION,1);
+            rot=ori==6?90:ori==3?180:ori==8?270:0;
+        }catch(Exception ignored){}
+        if(rot!=0){
+            Matrix mx=new Matrix();mx.postRotate(rot);
+            b=Bitmap.createBitmap(b,0,0,b.getWidth(),b.getHeight(),mx,true);
         }
-        button(c,"Choose photo",()->{
+        return b;
+    }
+    private void dimLine(Canvas c,Paint shadow,Paint line,float x1,float y1,float x2,float y2,float tick){
+        float dx=x2-x1,dy=y2-y1,len=(float)Math.hypot(dx,dy);
+        if(len<1)return;
+        float px=-dy/len*tick,py=dx/len*tick;
+        for(Paint p:new Paint[]{shadow,line}){
+            c.drawLine(x1,y1,x2,y2,p);
+            c.drawLine(x1-px,y1-py,x1+px,y1+py,p);
+            c.drawLine(x2-px,y2-py,x2+px,y2+py,p);
+        }
+    }
+    private void pillLabel(Canvas c,Paint pill,Paint txt,String s,float cx,float cy,float ts,int w,int h){
+        float tw=txt.measureText(s),pad=ts*0.5f,half=tw/2+pad;
+        cx=Math.max(half+4,Math.min(w-half-4,cx));
+        cy=Math.max(ts*0.5f+pad+4,Math.min(h-ts*0.5f-pad-4,cy));
+        RectF r=new RectF(cx-half,cy-ts*0.5f-pad,cx+half,cy+ts*0.5f+pad);
+        c.drawRoundRect(r,ts*0.6f,ts*0.6f,pill);
+        c.drawText(s,cx,cy+ts*0.35f,txt);
+    }
+    /** Draws the dimension lines and legible labels. Shared by the live preview and the JPEG export. */
+    private void drawDims(Canvas c,int w,int h,String[] v,String caption){
+        float base=Math.min(w,h);
+        float m=base*0.07f,stroke=Math.max(4f,base/160f),ts=Math.max(22f,base/17f),tick=base/40f;
+        Paint line=new Paint(Paint.ANTI_ALIAS_FLAG);line.setStrokeCap(Paint.Cap.ROUND);
+        Paint shadow=new Paint(line);
+        shadow.setColor(Color.argb(210,0,0,0));shadow.setStrokeWidth(stroke*2.4f);
+        line.setColor(Color.rgb(255,224,0));line.setStrokeWidth(stroke);
+        Paint pill=new Paint(Paint.ANTI_ALIAS_FLAG);pill.setColor(Color.argb(220,0,0,0));
+        Paint txt=new Paint(Paint.ANTI_ALIAS_FLAG);txt.setColor(Color.WHITE);txt.setTextSize(ts);
+        txt.setTypeface(Typeface.DEFAULT_BOLD);txt.setTextAlign(Paint.Align.CENTER);
+        if(!v[0].isEmpty()){
+            float x1=m*2.2f,x2=w-m,y=h-m*1.3f;
+            dimLine(c,shadow,line,x1,y,x2,y,tick);
+            pillLabel(c,pill,txt,"Width "+v[0]+" m",(x1+x2)/2f,y-ts*1.5f,ts,w,h);
+        }
+        if(!v[1].isEmpty()){
+            float x=m*1.3f,y1=m*1.6f,y2=h-m*2.2f;
+            String s="Height "+v[1]+" m";
+            dimLine(c,shadow,line,x,y1,x,y2,tick);
+            pillLabel(c,pill,txt,s,x+txt.measureText(s)/2+ts*1.2f,(y1+y2)/2f,ts,w,h);
+        }
+        if(!v[2].isEmpty()){
+            float x1=w-m*4.6f,y1=h*0.64f,x2=w-m*1.8f,y2=h*0.42f;
+            dimLine(c,shadow,line,x1,y1,x2,y2,tick);
+            pillLabel(c,pill,txt,"Depth "+v[2]+" m",(x1+x2)/2f-ts*2f,(y1+y2)/2f-ts*1.5f,ts,w,h);
+        }
+        if(caption!=null&&!caption.isEmpty())
+            pillLabel(c,pill,txt,caption,w/2f,m*0.9f+ts*0.6f,ts,w,h);
+    }
+    private final class AnnotView extends View{
+        private final Bitmap bmp;
+        AnnotView(Context c,Bitmap b){super(c);bmp=b;}
+        @Override protected void onMeasure(int wSpec,int hSpec){
+            int w=MeasureSpec.getSize(wSpec);
+            setMeasuredDimension(w,Math.round(w*(float)bmp.getHeight()/bmp.getWidth()));
+        }
+        @Override protected void onDraw(Canvas c){
+            super.onDraw(c);
+            c.drawBitmap(bmp,null,new Rect(0,0,getWidth(),getHeight()),null);
+            drawDims(c,getWidth(),getHeight(),photoVals,photoLabel);
+        }
+    }
+    private void typePhotoValue(int i){
+        EditText e=new EditText(this);
+        e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER|android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.setText(photoVals[i]);e.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this).setTitle(DIM_NAMES[i]+" in metres").setView(e)
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton("OK",(dialog,which)->{
+                double v=positive(e);
+                if(!Double.isFinite(v)){notice("Enter a number above zero");return;}
+                photoVals[i]=fmt(v);photoSel=nextEmptyDim();render();
+            }).show();
+    }
+    private int nextEmptyDim(){
+        for(int i=0;i<3;i++)if(photoVals[i].isEmpty())return i;
+        return -1;
+    }
+    private void dimTile(int i){
+        boolean sel=i==photoSel,filled=!photoVals[i].isEmpty();
+        LinearLayout tile=horizontal();tile.setBackground(tileBg(sel));pad(tile,16,12);
+        LinearLayout left=vertical();
+        left.addView(text(DIM_NAMES[i].toUpperCase(Locale.UK),12,MUTED,true));gap(left,2);
+        left.addView(text(filled?photoVals[i]+" m":"—",28,WHITE,true));gap(left,2);
+        left.addView(text(sel?"● Waiting… press measure on your IR40"
+            :filled?"Tap to measure again":"Tap to select this box",13,sel?BLUE:MUTED,sel));
+        tile.addView(left,new LinearLayout.LayoutParams(0,-2,1));
+        TextView type=text("Type",14,WHITE,true);type.setGravity(Gravity.CENTER);
+        type.setBackground(bg(BORDER,10));type.setOnClickListener(v->typePhotoValue(i));
+        tile.addView(type,lp(72,44));
+        TextView clear=text("✕",16,MUTED,true);clear.setGravity(Gravity.CENTER);
+        clear.setOnClickListener(v->{photoVals[i]="";photoSel=i;render();});
+        if(filled)tile.addView(clear,lp(40,44));
+        tile.setOnClickListener(v->{photoSel=i;render();});
+        LinearLayout.LayoutParams p=lp(-1,-2);p.bottomMargin=dp(10);content.addView(tile,p);
+    }
+    private void applyMeasurementToPhoto(Protocol.Measurement m){
+        if(!"Distance".equals(m.kind)){notice("Set the IR40 to normal distance mode, then measure again");return;}
+        if(photoSel<0||photoSel>=3){notice("Tap Width, Height or Depth first, then press measure");return;}
+        int done=photoSel;
+        photoVals[done]=fmt(m.value);
+        Toast.makeText(this,DIM_NAMES[done]+" = "+fmt(m.value)+" m",Toast.LENGTH_SHORT).show();
+        photoSel=-1;
+        for(int k=1;k<=3;k++){int j=(done+k)%3;if(photoVals[j].isEmpty()){photoSel=j;break;}}
+        render();
+    }
+    private void showPhoto(){
+        section("Photo annotation");
+        LinearLayout how=card(content);
+        how.addView(text("1. Choose a photo\n2. Tap Width, Height or Depth\n3. Press measure on your IR40. The label appears on the photo.\n4. Export the annotated JPEG.",15,WHITE,false));
+        button(content,photoUri==null?"Choose photo":"Choose a different photo",()->{
             Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*")
                 .addCategory(Intent.CATEGORY_OPENABLE);
             startActivityForResult(i,PHOTO_PICK);
-        },true);
-        EditText caption=input(c,"Measurement caption",photoLabel);
-        button(c,"Export annotated JPEG",()->{
+        },photoUri!=null);
+        if(photoUri!=null&&photoBmp==null){
+            try{photoBmp=loadPhoto(1600);}catch(Exception e){notice("Cannot open photo: "+e.getMessage());}
+        }
+        if(photoBmp!=null){
+            LinearLayout.LayoutParams p=lp(-1,-2);p.bottomMargin=dp(12);
+            content.addView(new AnnotView(this,photoBmp),p);
+        }
+        for(int i=0;i<3;i++)dimTile(i);
+        EditText caption=input(content,"Optional title (shown at the top)",photoLabel);
+        button(content,"Export annotated JPEG",()->{
             photoLabel=caption.getText().toString().trim();
-            getPreferences(MODE_PRIVATE).edit().putString("photo_label",photoLabel).apply();
+            getPreferences(MODE_PRIVATE).edit().putString("photo_caption",photoLabel).apply();
             if(photoUri==null){notice("Choose a photo first");return;}
+            if(photoVals[0].isEmpty()&&photoVals[1].isEmpty()&&photoVals[2].isEmpty()){
+                notice("Add at least one measurement first");return;
+            }
             try{
                 pendingFile=annotatedPhoto();
                 createDocument("image/jpeg","Blake-annotated-measurement.jpg",SAVE_PHOTO);
             }catch(Exception e){notice("Image export failed: "+e.getMessage());}
         },false);
-        line(c,"A caption is not a camera-derived dimension. Verify values using the IR40.");
+        button(content,"Clear all measurements",()->{
+            photoVals[0]="";photoVals[1]="";photoVals[2]="";photoSel=0;render();
+        },true);
+        content.addView(text("Labels come from your IR40 readings or typed values. They are not measured from the photo.",13,MUTED,false));
     }
     private byte[] annotatedPhoto()throws IOException{
-        Bitmap bitmap;
-        try(InputStream in=getContentResolver().openInputStream(photoUri)){
-            BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=2;
-            bitmap=BitmapFactory.decodeStream(in,null,options);
-        }
-        if(bitmap==null)throw new IOException("Unable to read photo");
-        int w=bitmap.getWidth(),h=bitmap.getHeight();
-        Bitmap overlay=bitmap.copy(Bitmap.Config.ARGB_8888,true);
-        Canvas canvas=new Canvas(overlay);Paint paint=new Paint(3);
-        float margin=w*.08f,y=h*.13f,stroke=Math.max(5,w/175f);
-        paint.setColor(Color.YELLOW);paint.setStrokeWidth(stroke);
-        canvas.drawLine(margin,y,w-margin,y,paint);
-        canvas.drawLine(margin,y-18,margin,y+18,paint);
-        canvas.drawLine(w-margin,y-18,w-margin,y+18,paint);
-        paint.setColor(Color.BLACK);paint.setTextSize(Math.max(28,w/24f));
-        paint.setTypeface(Typeface.DEFAULT_BOLD);canvas.drawText(photoLabel,margin+10,y-22,paint);
+        Bitmap overlay=loadPhoto(3000).copy(Bitmap.Config.ARGB_8888,true);
+        Canvas canvas=new Canvas(overlay);
+        drawDims(canvas,overlay.getWidth(),overlay.getHeight(),photoVals,photoLabel);
         ByteArrayOutputStream out=new ByteArrayOutputStream();
-        if(!overlay.compress(Bitmap.CompressFormat.JPEG,90,out))throw new IOException("Image encoding failed");
+        if(!overlay.compress(Bitmap.CompressFormat.JPEG,92,out))throw new IOException("Image encoding failed");
         return out.toByteArray();
     }
 
@@ -727,7 +850,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         if(result!=RESULT_OK||data==null||data.getData()==null)return;
         Uri uri=data.getData();
         if(req==PHOTO_PICK){
-            photoUri=uri;
+            photoUri=uri;photoBmp=null;
             getPreferences(MODE_PRIVATE).edit().putString("photo_uri",uri.toString()).apply();
             try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}
             catch(Exception ignored){}
@@ -784,10 +907,11 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 sessionMin=Double.isNaN(sessionMin)?m.value:Math.min(sessionMin,m.value);
                 sessionMax=Double.isNaN(sessionMax)?m.value:Math.max(sessionMax,m.value);
             }
-            boolean calculating="Calculate".equals(page);
-            if(store.autoSave()&&!calculating)try{store.addRecord(m,"IR40");}
+            boolean calculating="Calculate".equals(page),photoPage="Photo".equals(page);
+            if(store.autoSave()&&!calculating&&!photoPage)try{store.addRecord(m,"IR40");}
                 catch(Exception e){log("Unable to save reading: "+e.getMessage());}
             if(calculating)applyMeasurementToCalc(m);
+            else if(photoPage)applyMeasurementToPhoto(m);
             else if("Measure".equals(page))render();
         });
     }
