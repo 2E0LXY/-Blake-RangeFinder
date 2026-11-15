@@ -165,12 +165,12 @@ public final class BleClient {
             handler.post(()->callback.log(rx));
             Protocol.Stream stream=streams.get(id);
             if(stream==null){stream=new Protocol.Stream();streams.put(id,stream);}
-            synchronized(stream)stream.accept(b,new Protocol.Stream.Listener(){
+            synchronized(stream){stream.accept(b,new Protocol.Stream.Listener(){
                 @Override public void onMeasurement(Protocol.Measurement m,String raw){
                     handler.post(()->callback.measurement(m,raw));
                 }
                 @Override public void onInvalid(String reason){handler.post(()->callback.log(reason));}
-            });
+            });}
         }
     };
     private void closeGatt(){
