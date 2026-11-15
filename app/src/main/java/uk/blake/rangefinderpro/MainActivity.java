@@ -46,6 +46,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private int calcMode=0,calcSel=0,triIdx=-1;
     private final String[] calcVal={"","",""};
     private double triVal=Double.NaN;
+    private final ArrayList<Integer> triOrder=new ArrayList<>();
     private String triError=null;
     private final Runnable autoTick=new Runnable(){
         @Override public void run(){autoStart(false);ui.postDelayed(this,8000);}
@@ -371,7 +372,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         return -1;
     }
     private void calcClear(){
-        calcVal[0]="";calcVal[1]="";calcVal[2]="";calcSel=0;triIdx=-1;triVal=Double.NaN;triError=null;
+        calcVal[0]="";calcVal[1]="";calcVal[2]="";triOrder.clear();calcSel=0;triIdx=-1;triVal=Double.NaN;triError=null;
     }
     /** Returns {headline, detail} or null when more boxes need filling. */
     private String[] calcResult(){
@@ -404,6 +405,13 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
         return null;
     }
+    /** Stores a value; in Pythagoras mode only the two most recent sides stay "known", the third is calculated. */
+    private void setCalcVal(int i,String v){
+        calcVal[i]=v;
+        if(calcMode!=2)return;
+        triOrder.remove(Integer.valueOf(i));triOrder.add(i);
+        while(triOrder.size()>2)calcVal[triOrder.remove(0)]="";
+    }
     private GradientDrawable tileBg(boolean selected){
         GradientDrawable d=bg(selected?Color.rgb(24,54,96):CARD,14);
         d.setStroke(dp(selected?3:1),selected?BLUE:BORDER);return d;
@@ -417,7 +425,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             .setPositiveButton("OK",(dialog,which)->{
                 double v=positive(e);
                 if(!Double.isFinite(v)){notice("Enter a number above zero");return;}
-                calcVal[i]=fmt(v);calcSel=firstEmpty();render();
+                setCalcVal(i,fmt(v));calcSel=firstEmpty();render();
             }).show();
     }
     private void calcTile(int i,String[] labels){
@@ -443,7 +451,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         String[] labels=calcLabels();
         String[] result=calcResult();
         LinearLayout modes=horizontal();
-        String[] names={"Area","Volume","Triangle"};
+        String[] names={"Area","Volume","Pythagoras"};
         for(int i=0;i<3;i++){
             final int idx=i;boolean on=calcMode==i;
             TextView t=text(names[i],15,on?WHITE:MUTED,on);t.setGravity(Gravity.CENTER);
@@ -455,8 +463,18 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         content.addView(modes,lp(-1,48));gap(content,12);
         LinearLayout how=card(content);
         how.addView(text(calcMode==2
-            ?"1. Tap a box\n2. Press the measure button on your IR40\nFill any two sides. The third is worked out for you."
+            ?"1. Tap a side of the triangle (or its box) for a length you know\n2. Press the measure button on your IR40\nMeasure any two sides. The third is calculated and filled in for you."
             :"1. Tap a box\n2. Press the measure button on your IR40\nThe box fills in by itself.",15,WHITE,false));
+        if(calcMode==2){
+            int[] st=new int[3];double[] val=new double[3];
+            for(int i=0;i<3;i++){
+                if(!calcVal[i].isEmpty()){st[i]=1;val[i]=calcNum(i);}
+                else if(triIdx==i){st[i]=2;val[i]=triVal;}
+                else val[i]=Double.NaN;
+            }
+            TriangleView tv=new TriangleView(this,st,val,calcSel,i->{calcSel=i;render();});
+            LinearLayout.LayoutParams tp=lp(-1,270);tp.bottomMargin=dp(10);content.addView(tv,tp);
+        }
         for(int i=0;i<labels.length;i++)calcTile(i,labels);
         LinearLayout rc=card(content);label(rc,"Result");
         if(result==null){
@@ -489,7 +507,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         String[] labels=calcLabels();
         if(calcSel<0||calcSel>=labels.length){notice("Tap a box first, then press measure");return;}
         int filledIdx=calcSel;
-        calcVal[filledIdx]=fmt(m.value);
+        setCalcVal(filledIdx,fmt(m.value));
         Toast.makeText(this,labels[filledIdx]+" = "+fmt(m.value)+" m",Toast.LENGTH_SHORT).show();
         calcSel=-1;
         if(filledCount()<calcNeeded()){
@@ -560,6 +578,81 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             if(last==null||!"Distance".equals(last.kind)){notice("Take a distance measurement first");return;}
             widthInput.setText(fmt(last.value));
         },true);
+    }
+    /** Right-angled triangle. A = vertical, B = horizontal, C = hypotenuse. Tap a side to select it. */
+    private static final class TriangleView extends View {
+        private final int[] state;private final double[] val;private final int sel;
+        private final java.util.function.IntConsumer onTap;
+        private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float[] seg=new float[12];
+        TriangleView(Context c,int[] st,double[] v,int selected,java.util.function.IntConsumer tap){
+            super(c);state=st;val=v;sel=selected;onTap=tap;
+        }
+        private float d(float n){return n*getResources().getDisplayMetrics().density;}
+        private int colour(int i){
+            if(i==sel)return Color.rgb(26,126,241);
+            return state[i]==2?Color.rgb(60,210,153):state[i]==1?Color.WHITE:Color.rgb(120,138,160);
+        }
+        private String label(int i){
+            String n=i==0?"A":i==1?"B":"C";
+            return Double.isNaN(val[i])?n+" = ?":String.format(Locale.UK,"%s = %.3f m",n,val[i]);
+        }
+        @Override protected void onDraw(Canvas c){
+            super.onDraw(c);
+            // Shape follows the numbers once both legs are known, otherwise a 3:4:5 placeholder.
+            double a=3,b=4;
+            if(!Double.isNaN(val[0])&&!Double.isNaN(val[1])){a=val[0];b=val[1];}
+            else if(!Double.isNaN(val[0])&&!Double.isNaN(val[2])&&val[2]>val[0]){a=val[0];b=Math.sqrt(val[2]*val[2]-a*a);}
+            else if(!Double.isNaN(val[1])&&!Double.isNaN(val[2])&&val[2]>val[1]){b=val[1];a=Math.sqrt(val[2]*val[2]-b*b);}
+            double ratio=Math.max(0.33,Math.min(3.0,a/b));
+            float left=d(70),right=getWidth()-d(24),top=d(34),bottom=getHeight()-d(46);
+            float availW=right-left,availH=bottom-top;
+            float w=availW,h=(float)(w*ratio);
+            if(h>availH){h=availH;w=(float)(h/ratio);}
+            float x0=left+(availW-w)/2,y0=bottom;           // right-angle corner
+            float x1=x0,y1=y0-h;                              // top of A
+            float x2=x0+w,y2=y0;                              // end of B
+            seg[0]=x0;seg[1]=y0;seg[2]=x1;seg[3]=y1;          // A
+            seg[4]=x0;seg[5]=y0;seg[6]=x2;seg[7]=y2;          // B
+            seg[8]=x1;seg[9]=y1;seg[10]=x2;seg[11]=y2;        // C
+            Path fill=new Path();fill.moveTo(x0,y0);fill.lineTo(x1,y1);fill.lineTo(x2,y2);fill.close();
+            paint.setStyle(Paint.Style.FILL);paint.setColor(Color.rgb(24,36,54));c.drawPath(fill,paint);
+            paint.setStyle(Paint.Style.STROKE);paint.setStrokeCap(Paint.Cap.ROUND);
+            for(int i=0;i<3;i++){
+                paint.setColor(colour(i));paint.setStrokeWidth(d(i==sel?7:5));
+                c.drawLine(seg[i*4],seg[i*4+1],seg[i*4+2],seg[i*4+3],paint);
+            }
+            paint.setColor(Color.rgb(170,185,205));paint.setStrokeWidth(d(2));
+            float q=d(14);Path sq=new Path();sq.moveTo(x0,y0-q);sq.lineTo(x0+q,y0-q);sq.lineTo(x0+q,y0);c.drawPath(sq,paint);
+            paint.setStyle(Paint.Style.FILL);paint.setTypeface(Typeface.DEFAULT_BOLD);paint.setTextSize(d(16));
+            paint.setColor(colour(0));paint.setTextAlign(Paint.Align.RIGHT);
+            c.drawText(label(0),x0-d(12),(y0+y1)/2+d(6),paint);
+            paint.setColor(colour(1));paint.setTextAlign(Paint.Align.CENTER);
+            c.drawText(label(1),(x0+x2)/2,y0+d(28),paint);
+            // C label: offset outwards from the right-angle corner
+            float mx=(x1+x2)/2,my=(y1+y2)/2,nx=mx-x0,ny=my-y0,len=(float)Math.hypot(nx,ny);
+            if(len>0){nx/=len;ny/=len;}
+            paint.setColor(colour(2));paint.setTextAlign(Paint.Align.CENTER);
+            float lx=Math.min(getWidth()-d(70),Math.max(d(70),mx+nx*d(30)));
+            c.drawText(label(2),lx,my+ny*d(30)+d(6),paint);
+        }
+        @Override public boolean onTouchEvent(MotionEvent e){
+            if(e.getAction()==MotionEvent.ACTION_DOWN)return true;
+            if(e.getAction()!=MotionEvent.ACTION_UP)return true;
+            int best=-1;float bestD=d(56);
+            for(int i=0;i<3;i++){
+                float dist=segDist(e.getX(),e.getY(),seg[i*4],seg[i*4+1],seg[i*4+2],seg[i*4+3]);
+                if(dist<bestD){bestD=dist;best=i;}
+            }
+            if(best>=0){performClick();onTap.accept(best);}
+            return true;
+        }
+        @Override public boolean performClick(){return super.performClick();}
+        private static float segDist(float px,float py,float ax,float ay,float bx,float by){
+            float dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;
+            float t=l2==0?0:Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/l2));
+            return (float)Math.hypot(px-(ax+t*dx),py-(ay+t*dy));
+        }
     }
     private static final class RoomView extends View {
         private final double l,w;private final Paint paint=new Paint(3);
