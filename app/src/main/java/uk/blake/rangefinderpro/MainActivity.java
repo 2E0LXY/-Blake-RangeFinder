@@ -605,7 +605,9 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             else if(!Double.isNaN(val[0])&&!Double.isNaN(val[2])&&val[2]>val[0]){a=val[0];b=Math.sqrt(val[2]*val[2]-a*a);}
             else if(!Double.isNaN(val[1])&&!Double.isNaN(val[2])&&val[2]>val[1]){b=val[1];a=Math.sqrt(val[2]*val[2]-b*b);}
             double ratio=Math.max(0.33,Math.min(3.0,a/b));
-            float left=d(70),right=getWidth()-d(24),top=d(34),bottom=getHeight()-d(46);
+            paint.setTypeface(Typeface.DEFAULT_BOLD);paint.setTextSize(d(16));
+            float wA=paint.measureText(label(0)),wC=paint.measureText(label(2));
+            float left=wA+d(24),right=getWidth()-Math.max(d(24),wC/2),top=d(34),bottom=getHeight()-d(46);
             float availW=right-left,availH=bottom-top;
             float w=availW,h=(float)(w*ratio);
             if(h>availH){h=availH;w=(float)(h/ratio);}
@@ -633,7 +635,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             float mx=(x1+x2)/2,my=(y1+y2)/2,nx=mx-x0,ny=my-y0,len=(float)Math.hypot(nx,ny);
             if(len>0){nx/=len;ny/=len;}
             paint.setColor(colour(2));paint.setTextAlign(Paint.Align.CENTER);
-            float lx=Math.min(getWidth()-d(70),Math.max(d(70),mx+nx*d(30)));
+            float lx=Math.min(getWidth()-wC/2-d(4),Math.max(wC/2+d(4),mx+nx*d(30)));
             c.drawText(label(2),lx,my+ny*d(30)+d(6),paint);
         }
         @Override public boolean onTouchEvent(MotionEvent e){
