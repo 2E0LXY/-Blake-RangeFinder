@@ -19,9 +19,12 @@ import java.util.*;
 /** Native independent rangefinder client. Hardware protocol still requires IR40 testing. */
 public final class MainActivity extends Activity implements BleClient.Callback {
     private static final int NAVY=Color.rgb(13,19,29), CARD=Color.rgb(29,39,55), BLUE=Color.rgb(26,126,241),
-        WHITE=Color.WHITE, MUTED=Color.rgb(170,185,205), GREEN=Color.rgb(60,210,153), BORDER=Color.rgb(60,78,99);
+        WHITE=Color.WHITE, MUTED=Color.rgb(170,185,205), GREEN=Color.rgb(60,210,153), BORDER=Color.rgb(60,78,99),
+        AMBER=Color.rgb(245,176,65), RED=Color.rgb(240,100,100);
     private static final int SAVE_CSV=11,SAVE_PDF=12,SAVE_BACKUP=13,RESTORE_BACKUP=14,PHOTO_PICK=15,SAVE_PHOTO=16;
+    private static final String READY_PREFIX="Connected - listening";
     private LinearLayout root,content;
+    private TextView statusBar;
     private ProjectStore store;
     private BleClient ble;
     private String page="Measure",connection="Disconnected",lastRaw="—";
@@ -34,6 +37,17 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private String photoLabel="1.234 m";
     private EditText lengthInput,widthInput;
     private boolean reconnect=true;
+    private final Handler ui=new Handler(Looper.getMainLooper());
+    private boolean userDisconnected=false,askedPermission=false,autoConnect=false;
+    private boolean showDetails=false,showConnection=false;
+    // Calculator state: 0 = area, 1 = volume, 2 = triangle (Pythagoras)
+    private int calcMode=0,calcSel=0,triIdx=-1;
+    private final String[] calcVal={"","",""};
+    private double triVal=Double.NaN;
+    private String triError=null;
+    private final Runnable autoTick=new Runnable(){
+        @Override public void run(){autoStart(false);ui.postDelayed(this,8000);}
+    };
 
     @Override public void onCreate(Bundle b){
         super.onCreate(b);
@@ -45,7 +59,9 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         photoLabel=getPreferences(MODE_PRIVATE).getString("photo_label",photoLabel);
         render();
     }
-    @Override protected void onDestroy(){ble.close();super.onDestroy();}
+    @Override protected void onResume(){super.onResume();ui.removeCallbacks(autoTick);ui.postDelayed(autoTick,400);}
+    @Override protected void onPause(){ui.removeCallbacks(autoTick);super.onPause();}
+    @Override protected void onDestroy(){ui.removeCallbacks(autoTick);ble.close();super.onDestroy();}
 
     /**
      * API 35 enforces edge-to-edge. Opt in consistently on older Android as well,
@@ -111,9 +127,9 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     }
     private void line(LinearLayout parent,String value){parent.addView(text(value,15,WHITE,false));gap(parent,8);}
     private Button button(LinearLayout parent,String name,Runnable run,boolean secondary){
-        Button b=new Button(this);b.setText(name);b.setAllCaps(false);b.setTextColor(WHITE);b.setTextSize(14);
+        Button b=new Button(this);b.setText(name);b.setAllCaps(false);b.setTextColor(WHITE);b.setTextSize(15);
         b.setBackground(bg(secondary?BORDER:BLUE,10));b.setOnClickListener(v->run.run());
-        LinearLayout.LayoutParams p=lp(-1,48);p.bottomMargin=dp(8);parent.addView(b,p);return b;
+        LinearLayout.LayoutParams p=lp(-1,52);p.bottomMargin=dp(8);parent.addView(b,p);return b;
     }
     private EditText input(LinearLayout into,String hint,String preset){
         EditText e=new EditText(this);e.setSingleLine(true);e.setTextColor(WHITE);
@@ -131,9 +147,56 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         catch(Exception ex){return Double.NaN;}
     }
     private void notice(String m){Toast.makeText(this,m,Toast.LENGTH_LONG).show();}
-    private void section(String title){content.addView(text(title,21,WHITE,true));gap(content,15);}
+    private void section(String title){content.addView(text(title,24,WHITE,true));gap(content,15);}
     private String fmt(double v){return String.format(Locale.UK,"%.3f",v);}
 
+    // ---------- connection status ----------
+    private boolean ready(){return connection.startsWith(READY_PREFIX);}
+    private boolean busy(){
+        return connection.startsWith("Connecting")||connection.startsWith("Connected, discovering")
+            ||connection.startsWith("Reconnecting")||connection.startsWith("Scanning");
+    }
+    private int statusColor(){return ready()?GREEN:busy()?AMBER:RED;}
+    private int statusTint(){return ready()?Color.rgb(18,92,64):busy()?Color.rgb(110,78,10):Color.rgb(120,32,32);}
+    private void updateStatus(){
+        if(statusBar==null)return;
+        String t=ready()?"●  Connected to IR40"
+            :busy()?(connection.startsWith("Scanning")?"●  Searching for IR40…":"●  Connecting to IR40…")
+            :"●  Not connected - tap here";
+        statusBar.setText(t);statusBar.setTextColor(WHITE);statusBar.setBackgroundColor(statusTint());
+    }
+    private void requestBlePermissions(){
+        if(Build.VERSION.SDK_INT>=31)
+            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_CONNECT},7);
+        else requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},7);
+    }
+    /** Finds and connects to the IR40 without any button presses. Called on a timer while not connected. */
+    private void autoStart(boolean force){
+        if(force)userDisconnected=false;
+        if(userDisconnected||ready())return;
+        if(!force&&(busy()||ble.isScanning()))return;
+        if(!ble.permissionGranted()){
+            if(!askedPermission||force){askedPermission=true;requestBlePermissions();}
+            return;
+        }
+        if(!ble.enabled()){
+            connection="Bluetooth is switched off";updateStatus();
+            if("Measure".equals(page))render();
+            if(force)new AlertDialog.Builder(this).setTitle("Bluetooth is off")
+                .setMessage("Switch on Bluetooth, then the app will find your IR40 by itself.")
+                .setPositiveButton("OK",null).show();
+            return;
+        }
+        String saved=getPreferences(MODE_PRIVATE).getString("last_device","");
+        Map<String,BluetoothDevice> found=ble.devices();
+        if(!found.isEmpty()&&!found.containsKey(saved)){
+            autoConnect=false;ble.connect(found.values().iterator().next());return;
+        }
+        autoConnect=true;
+        ble.scan();
+    }
+
+    // ---------- layout ----------
     private void render(){
         root=vertical();root.setBackgroundColor(NAVY);setContentView(root);
         attachSafeAreaInsets(root);
@@ -141,28 +204,31 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.1.1 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.2.0 beta",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
+        statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);
+        statusBar.setOnClickListener(v->{page="Measure";render();});
+        root.addView(statusBar,lp(-1,40));updateStatus();
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setVerticalScrollBarEnabled(false);
         content=vertical();pad(content,16,16);scroll.addView(content);
         root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         switch(page){
+            case "Calculate":showCalculate();break;
             case "Projects":showProjects();break;
             case "Plan":showPlan();break;
-            case "Tools":showTools();break;
             case "Settings":showSettings();break;
             case "Photo":showPhoto();break;
             default:showMeasure();
         }
         // Five equal-width navigation tabs fit without horizontal scrolling.
-        // Tools and Settings remain accessible under More.
+        // Photo and Settings remain accessible under More.
         LinearLayout nav=horizontal();
         nav.setBackgroundColor(CARD);
         nav.setPadding(dp(5),dp(3),dp(5),dp(3));
-        for(String p:new String[]{"Measure","Projects","Plan","Photo","More"}){
+        for(String p:new String[]{"Measure","Calculate","Projects","Plan","More"}){
             boolean active=p.equals(page) || ("More".equals(p) &&
-                ("Tools".equals(page) || "Settings".equals(page)));
+                ("Photo".equals(page) || "Settings".equals(page)));
             TextView tab=text(p,11,active?WHITE:MUTED,active);
             tab.setGravity(Gravity.CENTER);
             tab.setBackground(bg(active?BLUE:CARD,10));
@@ -173,43 +239,76 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             tab.setOnClickListener(v->{
                 if("More".equals(p)){
                     new AlertDialog.Builder(this).setTitle("More")
-                        .setItems(new String[]{"Measurement tools","Settings & export"},
-                            (dialog,index)->{page=index==0?"Tools":"Settings";render();})
+                        .setItems(new String[]{"Photo annotation","Settings & export"},
+                            (dialog,index)->{page=index==0?"Photo":"Settings";render();})
                         .show();
-                }else{page=p;render();}
+                }else{
+                    page=p;
+                    if("Calculate".equals(p)&&calcSel<0)calcSel=firstEmpty();
+                    render();
+                }
             });
         }
         root.addView(nav,lp(-1,58));
     }
 
+    // ---------- Measure ----------
     private void showMeasure(){
-        section("Live measurement");
-        LinearLayout device=card(content);label(device,"IR40 Bluetooth");line(device,connection);
-        button(device,"Scan for IR40",this::startScan,false);
-        button(device,"Choose discovered device ("+ble.devices().size()+")",this::chooseDevice,true);
-        button(device,"Disconnect",()->{ble.disconnect();last=null;render();},true);
-        LinearLayout display=card(content);label(display,"Measurement");
-        display.addView(text(last==null?"—":last.display(),34,WHITE,true));gap(display,8);
-        if(last!=null){
-            line(display,"Type: "+last.kind);
-            if("Distance".equals(last.kind))
-                line(display,"Nominal tolerance: ±"+String.format(Locale.UK,"%.2f mm",Protocol.toleranceMm(last.value)));
-            line(display,"Device unit code: "+(last.unitCode==null?"unknown":last.unitCode));
-            line(display,"Reference code: "+(last.referenceCode==null?"unknown":last.referenceCode));
+        section("Measure");
+        boolean ok=ready(),wait=busy();
+        int sc=statusColor();
+        LinearLayout st=card(content);
+        GradientDrawable box=bg(CARD,14);box.setStroke(dp(2),sc);st.setBackground(box);
+        String head=ok?"Connected to IR40":wait?(connection.startsWith("Scanning")?"Searching for your IR40…":"Connecting to IR40…"):"IR40 not connected";
+        st.addView(text(head,22,sc,true));gap(st,8);
+        String sub=ok?"Press the measure button on your IR40. The reading appears below."
+            :wait?"Please wait. Make sure your IR40 is switched on and close to your phone."
+            :"Switch on your IR40 and keep it close to your phone."
+                +("Disconnected".equals(connection)?"":"\n("+connection+")");
+        st.addView(text(sub,15,WHITE,false));gap(st,10);
+        if(!ok&&!wait)button(st,"Connect now",()->autoStart(true),false);
+        button(st,showConnection?"Hide connection options":"Connection options",()->{showConnection=!showConnection;render();},true);
+        if(showConnection){
+            button(st,"Search again",()->autoStart(true),true);
+            button(st,"Choose a different IR40 ("+ble.devices().size()+" found)",this::chooseDevice,true);
+            button(st,"Disconnect",()->{userDisconnected=true;ble.disconnect();last=null;render();},true);
         }
-        button(display,"Save last reading",()->{
-            if(last==null){notice("Measure first");return;}
-            try{store.addRecord(last,"IR40");render();}catch(Exception e){notice("Save failed: "+e.getMessage());}
-        },false);
-        line(display,"Auto-save "+(store.autoSave()?"ON":"OFF")+" · "+sessionPackets+" decoded readings");
-        LinearLayout stats=card(content);label(stats,"Current session");
-        line(stats,"Count: "+sessionCount+"   Min: "+(Double.isNaN(sessionMin)?"—":fmt(sessionMin)+" m"));
-        line(stats,"Max: "+(Double.isNaN(sessionMax)?"—":fmt(sessionMax)+" m")
-            +"   Average: "+(sessionCount==0?"—":fmt(sessionSum/sessionCount)+" m"));
-        button(stats,"Reset session stats",()->{
-            sessionCount=0;sessionPackets=0;sessionSum=0;sessionMin=Double.NaN;sessionMax=Double.NaN;render();
-        },true);
-        showHistory(12);
+        LinearLayout display=card(content);label(display,"Latest reading");
+        display.addView(text(last==null?"—":last.display(),46,WHITE,true));gap(display,8);
+        if(last==null)line(display,"No reading yet. Press the measure button on your IR40.");
+        else{
+            if(!"Distance".equals(last.kind))line(display,"Type: "+last.kind);
+            line(display,store.autoSave()?"Saved automatically to "+projectName(store.active())+".":"Not saved yet.");
+            if(!store.autoSave())button(display,"Save this reading",()->{
+                try{store.addRecord(last,"IR40");render();}catch(Exception e){notice("Save failed: "+e.getMessage());}
+            },false);
+        }
+        button(content,showDetails?"Hide details":"Show details",()->{showDetails=!showDetails;render();},true);
+        if(showDetails){
+            if(last!=null){
+                LinearLayout tech=card(content);label(tech,"Reading details");
+                if("Distance".equals(last.kind))
+                    line(tech,"Nominal tolerance: ±"+String.format(Locale.UK,"%.2f mm",Protocol.toleranceMm(last.value)));
+                line(tech,"Device unit code: "+(last.unitCode==null?"unknown":last.unitCode));
+                line(tech,"Reference code: "+(last.referenceCode==null?"unknown":last.referenceCode));
+            }
+            LinearLayout stats=card(content);label(stats,"Current session");
+            line(stats,"Readings: "+sessionPackets+"   Distances: "+sessionCount);
+            line(stats,"Min: "+(Double.isNaN(sessionMin)?"—":fmt(sessionMin)+" m")
+                +"   Max: "+(Double.isNaN(sessionMax)?"—":fmt(sessionMax)+" m"));
+            line(stats,"Average: "+(sessionCount==0?"—":fmt(sessionSum/sessionCount)+" m"));
+            button(stats,"Reset session stats",()->{
+                sessionCount=0;sessionPackets=0;sessionSum=0;sessionMin=Double.NaN;sessionMax=Double.NaN;render();
+            },true);
+            LinearLayout manual=card(content);label(manual,"Type a measurement by hand");
+            EditText value=decimal(manual,"Distance in metres","");
+            button(manual,"Save typed measurement",()->{
+                double v=positive(value);
+                if(!Double.isFinite(v)){notice("Enter a valid distance");return;}
+                store.addManual(v);notice("Measurement saved");render();
+            },false);
+        }
+        showHistory(5);
     }
     private String unitSuffix(JSONObject r){
         String kind=r.optString("kind");
@@ -225,24 +324,17 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
         if(shown==0)line(h,"No saved measurements yet");
     }
-    private void startScan(){
-        if(!ble.enabled()){
-            new AlertDialog.Builder(this).setTitle("Bluetooth disabled")
-                .setMessage("Switch on Bluetooth, then scan again.")
-                .setPositiveButton("OK",null).show();return;
-        }
-        if(ble.permissionGranted()){ble.scan();render();return;}
-        if(Build.VERSION.SDK_INT>=31)
-            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_CONNECT},7);
-        else requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},7);
-    }
     @Override public void onRequestPermissionsResult(int req,String[] p,int[] g){
         super.onRequestPermissionsResult(req,p,g);
-        if(req==7){if(ble.permissionGranted())ble.scan();else notice("Nearby devices permission required");render();}
+        if(req==7){
+            if(ble.permissionGranted())autoStart(true);
+            else notice("Bluetooth permission is needed to find your IR40");
+            render();
+        }
     }
     private void chooseDevice(){
         Map<String,BluetoothDevice> devices=ble.devices();
-        if(devices.isEmpty()){notice("No IR40 found; run a scan with the device switched on");return;}
+        if(devices.isEmpty()){notice("No IR40 found yet. Switch it on and tap Search again.");return;}
         ArrayList<BluetoothDevice> values=new ArrayList<>(devices.values());
         String[] names=new String[values.size()];
         for(int i=0;i<names.length;i++){
@@ -251,9 +343,160 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             names[i]=n+"    "+d.getAddress();
         }
         new AlertDialog.Builder(this).setTitle("Connect to IR40")
-            .setItems(names,(dialog,which)->{ble.connect(values.get(which));render();}).show();
+            .setItems(names,(dialog,which)->{userDisconnected=false;autoConnect=false;ble.connect(values.get(which));render();}).show();
     }
 
+    // ---------- Calculate ----------
+    private String[] calcLabels(){
+        return calcMode==0?new String[]{"Length","Width"}
+            :calcMode==1?new String[]{"Length","Width","Height"}
+            :new String[]{"Side A","Side B","Longest side (C)"};
+    }
+    private int calcNeeded(){return calcMode==2?2:calcLabels().length;}
+    private double calcNum(int i){
+        try{double v=Double.parseDouble(calcVal[i]);return Double.isFinite(v)&&v>0?v:Double.NaN;}
+        catch(Exception e){return Double.NaN;}
+    }
+    private int filledCount(){
+        int n=0;for(int i=0;i<calcLabels().length;i++)if(!calcVal[i].isEmpty())n++;return n;
+    }
+    private int firstEmpty(){
+        if(filledCount()>=calcNeeded())return -1;
+        for(int i=0;i<calcLabels().length;i++)if(calcVal[i].isEmpty())return i;
+        return -1;
+    }
+    private void calcClear(){
+        calcVal[0]="";calcVal[1]="";calcVal[2]="";calcSel=0;triIdx=-1;triVal=Double.NaN;triError=null;
+    }
+    /** Returns {headline, detail} or null when more boxes need filling. */
+    private String[] calcResult(){
+        triIdx=-1;triVal=Double.NaN;triError=null;
+        if(calcMode==0){
+            double l=calcNum(0),w=calcNum(1);
+            if(Double.isNaN(l)||Double.isNaN(w))return null;
+            return new String[]{fmt(l*w)+" m²","Perimeter "+fmt(2*(l+w))+" m"};
+        }
+        if(calcMode==1){
+            double l=calcNum(0),w=calcNum(1),h=calcNum(2);
+            if(Double.isNaN(l)||Double.isNaN(w)||Double.isNaN(h))return null;
+            return new String[]{fmt(l*w*h)+" m³","Floor area "+fmt(l*w)+" m²"};
+        }
+        double a=calcNum(0),b=calcNum(1),c=calcNum(2);
+        boolean ha=!Double.isNaN(a),hb=!Double.isNaN(b),hc=!Double.isNaN(c);
+        if(ha&&hb){
+            triIdx=2;triVal=Math.hypot(a,b);
+            return new String[]{"C = "+fmt(triVal)+" m","Right-angled triangle. C is the longest side."};
+        }
+        if(ha&&hc){
+            if(c<=a){triError="The longest side (C) must be longer than A.";return null;}
+            triIdx=1;triVal=Math.sqrt(c*c-a*a);
+            return new String[]{"B = "+fmt(triVal)+" m","Right-angled triangle. C is the longest side."};
+        }
+        if(hb&&hc){
+            if(c<=b){triError="The longest side (C) must be longer than B.";return null;}
+            triIdx=0;triVal=Math.sqrt(c*c-b*b);
+            return new String[]{"A = "+fmt(triVal)+" m","Right-angled triangle. C is the longest side."};
+        }
+        return null;
+    }
+    private GradientDrawable tileBg(boolean selected){
+        GradientDrawable d=bg(selected?Color.rgb(24,54,96):CARD,14);
+        d.setStroke(dp(selected?3:1),selected?BLUE:BORDER);return d;
+    }
+    private void typeValue(int i,String[] labels){
+        EditText e=new EditText(this);
+        e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER|android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.setText(calcVal[i]);e.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this).setTitle(labels[i]+" in metres").setView(e)
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton("OK",(dialog,which)->{
+                double v=positive(e);
+                if(!Double.isFinite(v)){notice("Enter a number above zero");return;}
+                calcVal[i]=fmt(v);calcSel=firstEmpty();render();
+            }).show();
+    }
+    private void calcTile(int i,String[] labels){
+        boolean sel=i==calcSel,filled=!calcVal[i].isEmpty(),computed=!filled&&triIdx==i;
+        LinearLayout tile=horizontal();tile.setBackground(tileBg(sel));pad(tile,16,14);
+        LinearLayout left=vertical();
+        left.addView(text(labels[i].toUpperCase(Locale.UK),12,MUTED,true));gap(left,4);
+        String value=filled?calcVal[i]+" m":computed?fmt(triVal)+" m":"—";
+        left.addView(text(value,32,computed?GREEN:WHITE,true));gap(left,4);
+        String hint=sel?"● Waiting… press measure on your IR40"
+            :filled?"Tap to measure again":computed?"Worked out for you":"Tap to select this box";
+        left.addView(text(hint,13,sel?BLUE:MUTED,sel));
+        tile.addView(left,new LinearLayout.LayoutParams(0,-2,1));
+        TextView type=text("Type",14,WHITE,true);type.setGravity(Gravity.CENTER);
+        type.setBackground(bg(BORDER,10));
+        type.setOnClickListener(v->typeValue(i,labels));
+        tile.addView(type,lp(72,44));
+        tile.setOnClickListener(v->{calcSel=i;render();});
+        LinearLayout.LayoutParams p=lp(-1,-2);p.bottomMargin=dp(10);content.addView(tile,p);
+    }
+    private void showCalculate(){
+        section("Calculate");
+        String[] labels=calcLabels();
+        String[] result=calcResult();
+        LinearLayout modes=horizontal();
+        String[] names={"Area","Volume","Triangle"};
+        for(int i=0;i<3;i++){
+            final int idx=i;boolean on=calcMode==i;
+            TextView t=text(names[i],15,on?WHITE:MUTED,on);t.setGravity(Gravity.CENTER);
+            t.setBackground(bg(on?BLUE:CARD,10));
+            LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(48),1);
+            p.rightMargin=dp(i<2?8:0);modes.addView(t,p);
+            t.setOnClickListener(v->{if(calcMode!=idx){calcMode=idx;calcClear();}render();});
+        }
+        content.addView(modes,lp(-1,48));gap(content,12);
+        LinearLayout how=card(content);
+        how.addView(text(calcMode==2
+            ?"1. Tap a box\n2. Press the measure button on your IR40\nFill any two sides. The third is worked out for you."
+            :"1. Tap a box\n2. Press the measure button on your IR40\nThe box fills in by itself.",15,WHITE,false));
+        for(int i=0;i<labels.length;i++)calcTile(i,labels);
+        LinearLayout rc=card(content);label(rc,"Result");
+        if(result==null){
+            rc.addView(text(triError!=null?triError:"Fill in the boxes above to see the answer.",16,triError!=null?RED:MUTED,false));
+            gap(rc,10);
+        }else{
+            rc.addView(text(result[0],36,GREEN,true));gap(rc,8);line(rc,result[1]);
+            button(rc,"Save result to project",()->saveCalc(),false);
+        }
+        button(rc,"Start again",()->{calcClear();render();},true);
+    }
+    private void saveCalc(){
+        try{
+            if(calcMode==0){
+                double l=calcNum(0),w=calcNum(1);
+                store.addRecord(new Protocol.Measurement(3,l*w,l,w,0,null,null),"calculator");
+            }else if(calcMode==1){
+                double l=calcNum(0),w=calcNum(1),h=calcNum(2);
+                store.addRecord(new Protocol.Measurement(4,l*w*h,l,w,h,null,null),"calculator");
+            }else{
+                double a=triIdx==0?triVal:calcNum(0),b=triIdx==1?triVal:calcNum(1),c=triIdx==2?triVal:calcNum(2);
+                store.addRecord(new Protocol.Measurement(5,c,a,b,0,null,null),"calculator");
+            }
+            notice("Saved to "+projectName(store.active()));
+        }catch(Exception e){notice("Save failed: "+e.getMessage());}
+    }
+    /** Fills the selected box with a live reading, then moves to the next empty box. */
+    private void applyMeasurementToCalc(Protocol.Measurement m){
+        if(!"Distance".equals(m.kind)){notice("Set the IR40 to normal distance mode, then measure again");return;}
+        String[] labels=calcLabels();
+        if(calcSel<0||calcSel>=labels.length){notice("Tap a box first, then press measure");return;}
+        int filledIdx=calcSel;
+        calcVal[filledIdx]=fmt(m.value);
+        Toast.makeText(this,labels[filledIdx]+" = "+fmt(m.value)+" m",Toast.LENGTH_SHORT).show();
+        calcSel=-1;
+        if(filledCount()<calcNeeded()){
+            for(int k=1;k<=labels.length;k++){
+                int j=(filledIdx+k)%labels.length;
+                if(calcVal[j].isEmpty()){calcSel=j;break;}
+            }
+        }
+        render();
+    }
+
+    // ---------- Projects ----------
     private String projectName(String id){
         JSONArray list=store.projects();
         for(int i=0;i<list.length();i++){
@@ -331,31 +574,6 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             c.save();c.rotate(-90,x-12,y+rh);
             c.drawText(String.format(Locale.UK,"%.2f m",w),x-12,y+rh,paint);c.restore();
         }
-    }
-
-    private void showTools(){
-        section("Measurement tools");
-        LinearLayout c=card(content);label(c,"Calculator · metres");
-        EditText a=decimal(c,"Length / A",""),b=decimal(c,"Width / B",""),h=decimal(c,"Height / C","");
-        button(c,"Calculate area",()->{
-            double area=Protocol.area(positive(a),positive(b));
-            notice(Double.isFinite(area)?"Area = "+fmt(area)+" m²":"Enter positive length and width");
-        },false);
-        button(c,"Calculate volume",()->{
-            double v=Protocol.volume(positive(a),positive(b),positive(h));
-            notice(Double.isFinite(v)?"Volume = "+fmt(v)+" m³":"Enter three positive dimensions");
-        },false);
-        button(c,"Pythagoras · hypotenuse",()->{
-            double x=positive(a),y=positive(b);
-            notice(Double.isFinite(x)&&Double.isFinite(y)?"Hypotenuse = "+fmt(Math.hypot(x,y))+" m":"Enter positive A and B");
-        },true);
-        LinearLayout manual=card(content);label(manual,"Manual measurement");
-        EditText value=decimal(manual,"Distance in metres","");
-        button(manual,"Save manual measurement",()->{
-            double v=positive(value);
-            if(!Double.isFinite(v)){notice("Enter a valid distance");return;}
-            store.addManual(v);notice("Measurement saved");render();
-        },false);
     }
 
     private void showPhoto(){
@@ -537,14 +755,26 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
     }
 
+    // ---------- BleClient callbacks ----------
     @Override public void state(String s){
         runOnUiThread(()->{
             connection=s;if("Disconnected".equals(s))last=null;
+            if(s.startsWith(READY_PREFIX)){
+                String addr=ble.connectedAddress();
+                if(!addr.isEmpty())getPreferences(MODE_PRIVATE).edit().putString("last_device",addr).apply();
+            }
+            updateStatus();
             if("Measure".equals(page))render();
         });
     }
     @Override public void device(BluetoothDevice d,int rssi){
-        runOnUiThread(()->{if("Measure".equals(page))render();});
+        runOnUiThread(()->{
+            if(autoConnect&&!userDisconnected&&!ready()&&!connection.startsWith("Connecting")){
+                String saved=getPreferences(MODE_PRIVATE).getString("last_device","");
+                if(saved.isEmpty()||saved.equals(d.getAddress())){autoConnect=false;ble.connect(d);return;}
+            }
+            if("Measure".equals(page))render();
+        });
     }
     @Override public void measurement(Protocol.Measurement m,String raw){
         runOnUiThread(()->{
@@ -554,9 +784,11 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 sessionMin=Double.isNaN(sessionMin)?m.value:Math.min(sessionMin,m.value);
                 sessionMax=Double.isNaN(sessionMax)?m.value:Math.max(sessionMax,m.value);
             }
-            if(store.autoSave())try{store.addRecord(m,"IR40");}
+            boolean calculating="Calculate".equals(page);
+            if(store.autoSave()&&!calculating)try{store.addRecord(m,"IR40");}
                 catch(Exception e){log("Unable to save reading: "+e.getMessage());}
-            if("Measure".equals(page))render();
+            if(calculating)applyMeasurementToCalc(m);
+            else if("Measure".equals(page))render();
         });
     }
     @Override public void log(String message){

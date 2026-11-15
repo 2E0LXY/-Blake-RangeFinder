@@ -36,7 +36,7 @@ public final class BleClient {
     private boolean manual=true, reconnect=true, scanning=false;
     private int attempts=0;
     private final LinkedHashMap<String,BluetoothDevice> discovered=new LinkedHashMap<>();
-    private final Runnable scanStop=this::stopScan;
+    private final Runnable scanStop=()->{stopScan();if(gatt==null)callback.state("No IR40 found");};
 
     public BleClient(Context ctx,Callback cb){
         context=ctx.getApplicationContext();callback=cb;
@@ -45,6 +45,8 @@ public final class BleClient {
     }
     public Map<String,BluetoothDevice> devices(){return new LinkedHashMap<>(discovered);}
     public boolean enabled(){return adapter!=null&&adapter.isEnabled();}
+    public boolean isScanning(){return scanning;}
+    public String connectedAddress(){return connectedDevice==null?"":connectedDevice.getAddress();}
     public boolean permissionGranted(){
         if(Build.VERSION.SDK_INT>=31)
             return context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)==PackageManager.PERMISSION_GRANTED
