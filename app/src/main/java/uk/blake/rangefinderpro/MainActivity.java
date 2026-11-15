@@ -41,6 +41,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private boolean userDisconnected=false,askedPermission=false,autoConnect=false;
     private boolean showDetails=false,showConnection=false;
     // Calculator state: 0 = area, 1 = volume, 2 = triangle (Pythagoras)
+    private int offsetMm=0;private String accKnown="";private final ArrayList<Double> accReadings=new ArrayList<>();
     private int calcMode=0,calcSel=0,triIdx=-1;
     private final String[] calcVal={"","",""};
     private double triVal=Double.NaN;
@@ -54,6 +55,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         configureSystemBars();
         store=new ProjectStore(this);ble=new BleClient(this,this);
         reconnect=getPreferences(MODE_PRIVATE).getBoolean("reconnect",true);ble.setReconnect(reconnect);
+        offsetMm=getPreferences(MODE_PRIVATE).getInt("offset_mm",0);
         String uri=getPreferences(MODE_PRIVATE).getString("photo_uri","");
         if(!uri.isEmpty())photoUri=Uri.parse(uri);
         photoLabel=getPreferences(MODE_PRIVATE).getString("photo_caption","");
@@ -204,7 +206,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.2.1 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.3.0 beta",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);
@@ -219,6 +221,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             case "Plan":showPlan();break;
             case "Settings":showSettings();break;
             case "Photo":showPhoto();break;
+            case "Accuracy":showAccuracy();break;
             default:showMeasure();
         }
         // Five equal-width navigation tabs fit without horizontal scrolling.
@@ -228,7 +231,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         nav.setPadding(dp(5),dp(3),dp(5),dp(3));
         for(String p:new String[]{"Measure","Calculate","Projects","Plan","More"}){
             boolean active=p.equals(page) || ("More".equals(p) &&
-                ("Photo".equals(page) || "Settings".equals(page)));
+                ("Photo".equals(page) || "Settings".equals(page) || "Accuracy".equals(page)));
             TextView tab=text(p,11,active?WHITE:MUTED,active);
             tab.setGravity(Gravity.CENTER);
             tab.setBackground(bg(active?BLUE:CARD,10));
@@ -239,8 +242,8 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             tab.setOnClickListener(v->{
                 if("More".equals(p)){
                     new AlertDialog.Builder(this).setTitle("More")
-                        .setItems(new String[]{"Photo annotation","Settings & export"},
-                            (dialog,index)->{page=index==0?"Photo":"Settings";render();})
+                        .setItems(new String[]{"Photo annotation","Settings & export","Check accuracy"},
+                            (dialog,index)->{page=index==0?"Photo":index==1?"Settings":"Accuracy";render();})
                         .show();
                 }else{
                     page=p;
@@ -275,6 +278,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
         LinearLayout display=card(content);label(display,"Latest reading");
         display.addView(text(last==null?"—":last.display(),46,WHITE,true));gap(display,8);
+        if(offsetMm!=0)line(display,"Offset "+offsetText()+" applied");
         if(last==null)line(display,"No reading yet. Press the measure button on your IR40.");
         else{
             if(!"Distance".equals(last.kind))line(display,"Type: "+last.kind);
@@ -576,6 +580,92 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
     }
 
+    // ---------- Offset and accuracy check ----------
+    private Protocol.Measurement adjust(Protocol.Measurement m){
+        if(offsetMm==0||!"Distance".equals(m.kind))return m;
+        double v=m.value+offsetMm/1000.0;
+        if(!(v>0))return m;
+        return new Protocol.Measurement(m.mode,v,m.a,m.b,m.c,m.unitCode,m.referenceCode);
+    }
+    private void setOffset(int mm){
+        offsetMm=mm;getPreferences(MODE_PRIVATE).edit().putInt("offset_mm",mm).apply();
+    }
+    private String offsetText(){return (offsetMm>0?"+":"")+offsetMm+" mm";}
+    private void askOffset(){
+        EditText e=new EditText(this);
+        e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER|android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+            |android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.setText(offsetMm==0?"":String.valueOf(offsetMm));e.setHint("e.g. 100 or -25");
+        new AlertDialog.Builder(this).setTitle("Offset in millimetres")
+            .setMessage("Added to every distance reading. Use a positive number to measure from further back, for example 100 for a tripod mount. Limit 500 mm either way.")
+            .setView(e).setNegativeButton("Cancel",null)
+            .setPositiveButton("OK",(dialog,which)->{
+                try{
+                    int v=(int)Math.round(Double.parseDouble(e.getText().toString().trim()));
+                    if(Math.abs(v)>500){notice("Offset must be between -500 and 500 mm");return;}
+                    setOffset(v);render();
+                }catch(Exception ex){notice("Enter a number in millimetres");}
+            }).show();
+    }
+    private double accKnownValue(){
+        try{double v=Double.parseDouble(accKnown);return Double.isFinite(v)&&v>0?v:Double.NaN;}
+        catch(Exception e){return Double.NaN;}
+    }
+    private void addAccuracyReading(Protocol.Measurement m){
+        if(!"Distance".equals(m.kind)){notice("Set the IR40 to normal distance mode, then measure again");return;}
+        if(Double.isNaN(accKnownValue())){notice("Enter the known length first");return;}
+        if(accReadings.size()>=10)accReadings.remove(0);
+        accReadings.add(m.value);
+        render();
+    }
+    private void showAccuracy(){
+        section("Check accuracy");
+        LinearLayout how=card(content);
+        how.addView(text("1. Pick a length you know is right, such as a tape-checked 2 m\n2. Enter it below\n3. Press measure on your IR40 a few times from the same spot",15,WHITE,false));
+        double known=accKnownValue();
+        LinearLayout kc=horizontal();kc.setBackground(tileBg(Double.isNaN(known)));pad(kc,16,14);
+        LinearLayout left=vertical();
+        left.addView(text("KNOWN LENGTH",12,MUTED,true));gap(left,4);
+        left.addView(text(Double.isNaN(known)?"—":fmt(known)+" m",32,WHITE,true));
+        kc.addView(left,new LinearLayout.LayoutParams(0,-2,1));
+        TextView type=text(Double.isNaN(known)?"Enter":"Change",14,WHITE,true);
+        type.setGravity(Gravity.CENTER);type.setBackground(bg(BLUE,10));
+        type.setOnClickListener(v->{
+            EditText e=new EditText(this);
+            e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER|android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+            e.setText(accKnown);e.setSelectAllOnFocus(true);
+            new AlertDialog.Builder(this).setTitle("Known length in metres").setView(e)
+                .setNegativeButton("Cancel",null)
+                .setPositiveButton("OK",(dialog,which)->{
+                    double val=positive(e);
+                    if(!Double.isFinite(val)){notice("Enter a number above zero");return;}
+                    accKnown=fmt(val);accReadings.clear();render();
+                }).show();
+        });
+        kc.addView(type,lp(84,44));
+        LinearLayout.LayoutParams kp=lp(-1,-2);kp.bottomMargin=dp(10);content.addView(kc,kp);
+        LinearLayout rc=card(content);label(rc,"Readings");
+        if(accReadings.isEmpty())
+            line(rc,Double.isNaN(known)?"Enter the known length, then measure.":"Press measure on your IR40.");
+        double tol=Double.isNaN(known)?0:Protocol.toleranceMm(known),sum=0;
+        for(int i=0;i<accReadings.size();i++){
+            double d=(accReadings.get(i)-known)*1000.0;sum+=d;
+            boolean within=Math.abs(d)<=tol;
+            rc.addView(text((i+1)+".  "+fmt(accReadings.get(i))+" m    "
+                +String.format(Locale.UK,"%+.1f mm",d)+(within?"   ✓":"   ✗"),16,within?GREEN:RED,false));
+            gap(rc,6);
+        }
+        if(!accReadings.isEmpty()&&!Double.isNaN(known)){
+            double avg=sum/accReadings.size();boolean pass=Math.abs(avg)<=tol;
+            gap(rc,6);
+            rc.addView(text(pass?"PASS":"OUTSIDE TOLERANCE",30,pass?GREEN:RED,true));gap(rc,8);
+            line(rc,String.format(Locale.UK,"Average error %+.1f mm. Allowed ±%.1f mm at %.3f m.",avg,tol,known));
+            if(!pass)line(rc,"Check the reference point (rear, front or tripod), the offset in Settings, and that the laser hits a flat surface. If it still fails, contact Blake UK support.");
+            if(offsetMm!=0)line(rc,"Includes your "+offsetText()+" offset.");
+        }
+        button(rc,"Clear readings",()->{accReadings.clear();render();},true);
+    }
+
     // ---------- Photo annotation ----------
     private static final String[] DIM_NAMES={"Width","Height","Depth"};
     private Bitmap loadPhoto(int maxSide)throws IOException{
@@ -758,6 +848,11 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             getPreferences(MODE_PRIVATE).edit().putBoolean("reconnect",reconnect).apply();render();
         },true);
         line(c,"Device-reference codes are logged but unit and reference controls require hardware validation.");
+        LinearLayout cal=card(content);label(cal,"Measuring offset");
+        line(cal,offsetMm==0?"No offset. Readings are exactly what the IR40 reports.":"Offset "+offsetText()+" is added to every distance reading.");
+        button(cal,"Set offset (mm)",this::askOffset,false);
+        if(offsetMm!=0)button(cal,"Remove offset",()->{setOffset(0);render();},true);
+        button(cal,"Check accuracy",()->{page="Accuracy";render();},true);
         LinearLayout ex=card(content);label(ex,"Reports · selected project");
         button(ex,"Export CSV",()->{
             pendingFile=csv().getBytes(StandardCharsets.UTF_8);
@@ -899,7 +994,8 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             if("Measure".equals(page))render();
         });
     }
-    @Override public void measurement(Protocol.Measurement m,String raw){
+    @Override public void measurement(Protocol.Measurement incoming,String raw){
+        final Protocol.Measurement m=adjust(incoming);
         runOnUiThread(()->{
             last=m;lastRaw=raw;sessionPackets++;
             if("Distance".equals(m.kind)){
@@ -907,11 +1003,12 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 sessionMin=Double.isNaN(sessionMin)?m.value:Math.min(sessionMin,m.value);
                 sessionMax=Double.isNaN(sessionMax)?m.value:Math.max(sessionMax,m.value);
             }
-            boolean calculating="Calculate".equals(page),photoPage="Photo".equals(page);
-            if(store.autoSave()&&!calculating&&!photoPage)try{store.addRecord(m,"IR40");}
+            boolean calculating="Calculate".equals(page),photoPage="Photo".equals(page),accPage="Accuracy".equals(page);
+            if(store.autoSave()&&!calculating&&!photoPage&&!accPage)try{store.addRecord(m,"IR40");}
                 catch(Exception e){log("Unable to save reading: "+e.getMessage());}
             if(calculating)applyMeasurementToCalc(m);
             else if(photoPage)applyMeasurementToPhoto(m);
+            else if(accPage)addAccuracyReading(m);
             else if("Measure".equals(page))render();
         });
     }
