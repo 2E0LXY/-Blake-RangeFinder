@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothDevice;
 import android.graphics.*;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.provider.MediaStore;
 import android.view.*;
 import android.widget.*;
 import org.json.*;
@@ -21,7 +22,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private static final int NAVY=Color.rgb(13,19,29), CARD=Color.rgb(29,39,55), BLUE=Color.rgb(26,126,241),
         WHITE=Color.WHITE, MUTED=Color.rgb(170,185,205), GREEN=Color.rgb(60,210,153), BORDER=Color.rgb(60,78,99),
         AMBER=Color.rgb(245,176,65), RED=Color.rgb(240,100,100);
-    private static final int SAVE_CSV=11,SAVE_PDF=12,SAVE_BACKUP=13,RESTORE_BACKUP=14,PHOTO_PICK=15,SAVE_PHOTO=16;
+    private static final int SAVE_CSV=11,SAVE_PDF=12,SAVE_BACKUP=13,RESTORE_BACKUP=14,PHOTO_PICK=15,SAVE_PHOTO=16,PHOTO_CAPTURE=17;
     private static final String READY_PREFIX="Connected - listening";
     private LinearLayout root,content;
     private TextView statusBar;
@@ -206,7 +207,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.3.0 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.3.1 beta",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);
@@ -666,6 +667,38 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         button(rc,"Clear readings",()->{accReadings.clear();render();},true);
     }
 
+    // ---------- Take a photo ----------
+    private void takePhoto(){
+        PhotoProvider.captureFile(this).delete();
+        Intent i=new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        i.putExtra(MediaStore.EXTRA_OUTPUT,PhotoProvider.captureUri());
+        i.setClipData(ClipData.newRawUri("photo",PhotoProvider.captureUri()));
+        i.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try{startActivityForResult(i,PHOTO_CAPTURE);}
+        catch(ActivityNotFoundException e){notice("No camera app found. Use Choose from gallery instead.");}
+    }
+    private void handleCapture(int result){
+        File src=PhotoProvider.captureFile(this);
+        if(result!=RESULT_OK||src.length()==0)return;
+        try{
+            File dir=new File(getFilesDir(),"photos");dir.mkdirs();
+            File dest=new File(dir,"IMG_"+System.currentTimeMillis()+".jpg");
+            try(InputStream in=new FileInputStream(src);OutputStream out=new FileOutputStream(dest)){
+                byte[] buf=new byte[65536];int n;
+                while((n=in.read(buf))>0)out.write(buf,0,n);
+            }
+            src.delete();
+            File[] all=dir.listFiles();
+            if(all!=null&&all.length>10){
+                Arrays.sort(all,(x,y)->Long.compare(x.lastModified(),y.lastModified()));
+                for(int k=0;k<all.length-10;k++)all[k].delete();
+            }
+            photoUri=Uri.fromFile(dest);photoBmp=null;
+            getPreferences(MODE_PRIVATE).edit().putString("photo_uri",photoUri.toString()).apply();
+            render();
+        }catch(IOException e){notice("Cannot save photo: "+e.getMessage());}
+    }
+
     // ---------- Photo annotation ----------
     private static final String[] DIM_NAMES={"Width","Height","Depth"};
     private Bitmap loadPhoto(int maxSide)throws IOException{
@@ -796,12 +829,13 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private void showPhoto(){
         section("Photo annotation");
         LinearLayout how=card(content);
-        how.addView(text("1. Choose a photo\n2. Tap Width, Height or Depth\n3. Press measure on your IR40. The label appears on the photo.\n4. Export the annotated JPEG.",15,WHITE,false));
-        button(content,photoUri==null?"Choose photo":"Choose a different photo",()->{
+        how.addView(text("1. Take or choose a photo (use the original, not an exported one)\n2. Tap Width, Height or Depth\n3. Press measure on your IR40. The label appears on the photo.\n4. Export the annotated JPEG.",15,WHITE,false));
+        button(content,"Take a photo",this::takePhoto,false);
+        button(content,"Choose from gallery",()->{
             Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*")
                 .addCategory(Intent.CATEGORY_OPENABLE);
             startActivityForResult(i,PHOTO_PICK);
-        },photoUri!=null);
+        },true);
         if(photoUri!=null&&photoBmp==null){
             try{photoBmp=loadPhoto(1600);}catch(Exception e){notice("Cannot open photo: "+e.getMessage());}
         }
@@ -942,6 +976,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     }
     @Override protected void onActivityResult(int req,int result,Intent data){
         super.onActivityResult(req,result,data);
+        if(req==PHOTO_CAPTURE){handleCapture(result);return;}
         if(result!=RESULT_OK||data==null||data.getData()==null)return;
         Uri uri=data.getData();
         if(req==PHOTO_PICK){

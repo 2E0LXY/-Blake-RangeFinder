@@ -6,8 +6,8 @@ android {
         applicationId 'uk.blake.rangefinderpro'
         minSdk 26
         targetSdk 35
-        versionCode 2300
-        versionName '2.3.0-beta.1'
+        versionCode 2301
+        versionName '2.3.1-beta.1'
     }
     buildTypes {
         release { minifyEnabled false }
