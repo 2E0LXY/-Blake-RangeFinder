@@ -36,7 +36,7 @@ public final class BleClient {
     private boolean manual=true, reconnect=true, scanning=false;
     private int attempts=0;
     private final LinkedHashMap<String,BluetoothDevice> discovered=new LinkedHashMap<>();
-    private final Runnable scanStop=()->{stopScan();if(gatt==null)callback.state("No IR40 found");};
+    private final Runnable scanStop=()->{stopScan();if(this.gatt==null)this.callback.state("No IR40 found");};
 
     public BleClient(Context ctx,Callback cb){
         context=ctx.getApplicationContext();callback=cb;
