@@ -28,7 +28,11 @@ public final class BleClient {
     private BluetoothLeScanner scanner;
     private BluetoothGatt gatt;
     private BluetoothDevice connectedDevice;
-    private final Protocol.Stream stream=new Protocol.Stream();
+    private final Map<UUID,Protocol.Stream> streams=new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentLinkedQueue<BluetoothGattCharacteristic> pending=new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private int subscribed=0;
+    private static final UUID CCCD=UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+    private static final UUID SERVICE_CHANGED=UUID.fromString("00002a05-0000-1000-8000-00805f9b34fb");
     private boolean manual=true, reconnect=true, scanning=false;
     private int attempts=0;
     private final LinkedHashMap<String,BluetoothDevice> discovered=new LinkedHashMap<>();
@@ -90,7 +94,7 @@ public final class BleClient {
     private void connectNow(){
         if(manual||connectedDevice==null||!permissionGranted())return;
         callback.state("Connecting...");
-        stream.reset();
+        streams.clear();pending.clear();subscribed=0;
         try{gatt=connectedDevice.connectGatt(context,false,gattCallback,BluetoothDevice.TRANSPORT_LE);}
         catch(Exception e){callback.log("Connection exception "+e);scheduleReconnect();}
     }
@@ -115,38 +119,58 @@ public final class BleClient {
                 for(BluetoothGattCharacteristic c:service.getCharacteristics()){
                     int props=c.getProperties();
                     callback.log("GATT "+service.getUuid()+" / "+c.getUuid()+" flags="+props);
+                    if(SERVICE_CHANGED.equals(c.getUuid()))continue;
                     if((props&(BluetoothGattCharacteristic.PROPERTY_NOTIFY|BluetoothGattCharacteristic.PROPERTY_INDICATE))!=0)
                         notify.add(c);
                 }
             }
             if(notify.isEmpty()){callback.state("No notification characteristic");return;}
-            BluetoothGattCharacteristic c=notify.get(0);
-            callback.log("Subscribing to first notifying characteristic "+c.getUuid()+" (hardware validation needed)");
-            if(!g.setCharacteristicNotification(c,true)){callback.state("Notification setup failed");return;}
-            BluetoothGattDescriptor cccd=c.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
-            if(cccd==null){callback.state("CCCD unavailable; no live readings");return;}
-            byte[] value=(c.getProperties()&BluetoothGattCharacteristic.PROPERTY_NOTIFY)!=0
-                ?BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE:BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
-            try{
-                if(Build.VERSION.SDK_INT>=33)g.writeDescriptor(cccd,value);
-                else{cccd.setValue(value);g.writeDescriptor(cccd);}
-            }catch(Exception e){callback.log("Notification subscription exception "+e);callback.state("Notification error");}
+            pending.clear();pending.addAll(notify);subscribed=0;
+            callback.log("Subscribing to "+notify.size()+" notifying characteristic(s)");
+            subscribeNext(g);
         }
         @Override public void onDescriptorWrite(BluetoothGatt g,BluetoothGattDescriptor d,int status){
-            callback.state(status==BluetoothGatt.GATT_SUCCESS?"Connected - listening for measurements":"Notification failed "+status);
+            if(g!=gatt)return;
+            if(status==BluetoothGatt.GATT_SUCCESS)subscribed++;
+            else callback.log("CCCD write failed "+d.getCharacteristic().getUuid()+" status "+status);
+            subscribeNext(g);
         }
         @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c){
-            if(Build.VERSION.SDK_INT<33)accept(c.getValue());
+            if(Build.VERSION.SDK_INT<33)accept(c.getUuid(),c.getValue());
         }
-        @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c,byte[] bytes){accept(bytes);}
-        private void accept(byte[] b){
+        @Override public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c,byte[] bytes){accept(c.getUuid(),bytes);}
+        private void subscribeNext(BluetoothGatt g){
+            BluetoothGattCharacteristic c=pending.poll();
+            if(c==null){
+                callback.state(subscribed>0?"Connected - listening for measurements ("+subscribed+" ch)":"Notification setup failed");
+                return;
+            }
+            BluetoothGattDescriptor cccd=c.getDescriptor(CCCD);
+            if(cccd==null||!g.setCharacteristicNotification(c,true)){
+                callback.log("Cannot subscribe "+c.getUuid());subscribeNext(g);return;
+            }
+            byte[] value=(c.getProperties()&BluetoothGattCharacteristic.PROPERTY_NOTIFY)!=0
+                ?BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE:BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
+            callback.log("Subscribing "+c.getUuid());
+            try{
+                boolean ok;
+                if(Build.VERSION.SDK_INT>=33)ok=g.writeDescriptor(cccd,value)==BluetoothStatusCodes.SUCCESS;
+                else{cccd.setValue(value);ok=g.writeDescriptor(cccd);}
+                if(!ok){callback.log("writeDescriptor rejected "+c.getUuid());subscribeNext(g);}
+            }catch(Exception e){callback.log("Subscription exception "+e);subscribeNext(g);}
+        }
+        private void accept(UUID id,byte[] b){
             if(b==null)return;
-            stream.accept(b,new Protocol.Stream.Listener(){
+            final String rx="RX "+id+" "+Protocol.hex(b);
+            handler.post(()->callback.log(rx));
+            Protocol.Stream stream=streams.get(id);
+            if(stream==null){stream=new Protocol.Stream();streams.put(id,stream);}
+            synchronized(stream){stream.accept(b,new Protocol.Stream.Listener(){
                 @Override public void onMeasurement(Protocol.Measurement m,String raw){
                     handler.post(()->callback.measurement(m,raw));
                 }
                 @Override public void onInvalid(String reason){handler.post(()->callback.log(reason));}
-            });
+            });}
         }
     };
     private void closeGatt(){
