@@ -9,6 +9,9 @@ import android.graphics.*;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.provider.MediaStore;
+import android.print.*;
+import android.animation.*;
+import android.view.animation.*;
 import android.view.*;
 import android.widget.*;
 import org.json.*;
@@ -22,7 +25,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private static final int NAVY=Color.rgb(13,19,29), CARD=Color.rgb(29,39,55), BLUE=Color.rgb(26,126,241),
         WHITE=Color.WHITE, MUTED=Color.rgb(170,185,205), GREEN=Color.rgb(60,210,153), BORDER=Color.rgb(60,78,99),
         AMBER=Color.rgb(245,176,65), RED=Color.rgb(240,100,100);
-    private static final int SAVE_CSV=11,SAVE_PDF=12,SAVE_BACKUP=13,RESTORE_BACKUP=14,PHOTO_PICK=15,SAVE_PHOTO=16,PHOTO_CAPTURE=17;
+    private static final int SAVE_CSV=11,SAVE_PDF=12,SAVE_BACKUP=13,RESTORE_BACKUP=14,PHOTO_PICK=15,SAVE_PHOTO=16,PHOTO_CAPTURE=17,BUSINESS_LOGO=18;
     private static final String READY_PREFIX="Connected - listening";
     private LinearLayout root,content;
     private TextView statusBar;
@@ -38,6 +41,16 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private String photoLabel="";private Bitmap photoBmp;private final String[] photoVals={"","",""};private int photoSel=0;
     private EditText lengthInput,widthInput;
     private boolean reconnect=true;
+    private boolean animateNext=false;private ObjectAnimator pulse;private Protocol.Measurement popShown;
+    private final float[][] photoPts={{.14f,.90f,.93f,.90f},{.07f,.08f,.07f,.84f},{.72f,.68f,.90f,.46f}};
+    private final View.OnTouchListener pressFx=(v,e)->{
+        switch(e.getAction()){
+            case MotionEvent.ACTION_DOWN:v.animate().scaleX(.96f).scaleY(.96f).setDuration(90).start();break;
+            case MotionEvent.ACTION_UP:case MotionEvent.ACTION_CANCEL:
+                v.animate().scaleX(1f).scaleY(1f).setDuration(160).setInterpolator(new OvershootInterpolator(2f)).start();break;
+        }
+        return false;
+    };
     private final Handler ui=new Handler(Looper.getMainLooper());
     private boolean userDisconnected=false,askedPermission=false,autoConnect=false;
     private boolean showDetails=false,showConnection=false;
@@ -61,6 +74,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         String uri=getPreferences(MODE_PRIVATE).getString("photo_uri","");
         if(!uri.isEmpty())photoUri=Uri.parse(uri);
         photoLabel=getPreferences(MODE_PRIVATE).getString("photo_caption","");
+        loadPhotoPts();
         render();
     }
     @Override protected void onResume(){super.onResume();ui.removeCallbacks(autoTick);ui.postDelayed(autoTick,400);}
@@ -132,7 +146,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private void line(LinearLayout parent,String value){parent.addView(text(value,15,WHITE,false));gap(parent,8);}
     private Button button(LinearLayout parent,String name,Runnable run,boolean secondary){
         Button b=new Button(this);b.setText(name);b.setAllCaps(false);b.setTextColor(WHITE);b.setTextSize(15);
-        b.setBackground(bg(secondary?BORDER:BLUE,10));b.setOnClickListener(v->run.run());
+        b.setBackground(bg(secondary?BORDER:BLUE,10));b.setOnClickListener(v->run.run());b.setOnTouchListener(pressFx);
         LinearLayout.LayoutParams p=lp(-1,52);p.bottomMargin=dp(8);parent.addView(b,p);return b;
     }
     private EditText input(LinearLayout into,String hint,String preset){
@@ -151,6 +165,14 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         catch(Exception ex){return Double.NaN;}
     }
     private void notice(String m){Toast.makeText(this,m,Toast.LENGTH_LONG).show();}
+    private void go(String p){page=p;animateNext=true;render();}
+    private void staggerIn(LinearLayout box){
+        for(int i=0;i<box.getChildCount();i++){
+            View v=box.getChildAt(i);v.setAlpha(0f);v.setTranslationY(dp(22));
+            v.animate().alpha(1f).translationY(0f).setStartDelay(Math.min(i,10)*55L).setDuration(380)
+                .setInterpolator(new DecelerateInterpolator(1.6f)).start();
+        }
+    }
     private void section(String title){content.addView(text(title,24,WHITE,true));gap(content,15);}
     private String fmt(double v){return String.format(Locale.UK,"%.3f",v);}
 
@@ -202,18 +224,21 @@ public final class MainActivity extends Activity implements BleClient.Callback {
 
     // ---------- layout ----------
     private void render(){
+        if(pulse!=null){pulse.cancel();pulse=null;}
         root=vertical();root.setBackgroundColor(NAVY);setContentView(root);
         attachSafeAreaInsets(root);
         LinearLayout header=horizontal();pad(header,17,9);
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.3.1 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.4.0 beta",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);
-        statusBar.setOnClickListener(v->{page="Measure";render();});
+        statusBar.setOnClickListener(v->go("Measure"));
         root.addView(statusBar,lp(-1,40));updateStatus();
+        if(busy()){pulse=ObjectAnimator.ofFloat(statusBar,"alpha",1f,.55f);pulse.setDuration(750);
+            pulse.setRepeatMode(ValueAnimator.REVERSE);pulse.setRepeatCount(ValueAnimator.INFINITE);pulse.start();}
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setVerticalScrollBarEnabled(false);
         content=vertical();pad(content,16,16);scroll.addView(content);
         root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -226,6 +251,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             case "Accuracy":showAccuracy();break;
             default:showMeasure();
         }
+        if(animateNext){animateNext=false;staggerIn(content);}
         // Five equal-width navigation tabs fit without horizontal scrolling.
         // Photo and Settings remain accessible under More.
         LinearLayout nav=horizontal();
@@ -237,7 +263,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             TextView tab=text(p,11,active?WHITE:MUTED,active);
             tab.setGravity(Gravity.CENTER);
             tab.setBackground(bg(active?BLUE:CARD,10));
-            tab.setContentDescription(p+" tab");
+            tab.setContentDescription(p+" tab");tab.setOnTouchListener(pressFx);
             LinearLayout.LayoutParams item=new LinearLayout.LayoutParams(0,dp(52),1);
             item.leftMargin=dp(2);item.rightMargin=dp(2);
             nav.addView(tab,item);
@@ -245,12 +271,13 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 if("More".equals(p)){
                     new AlertDialog.Builder(this).setTitle("More")
                         .setItems(new String[]{"Photo annotation","Settings & export","Check accuracy"},
-                            (dialog,index)->{page=index==0?"Photo":index==1?"Settings":"Accuracy";render();})
+                            (dialog,index)->go(index==0?"Photo":index==1?"Settings":"Accuracy"))
                         .show();
                 }else{
-                    page=p;
-                    if("Calculate".equals(p)&&calcSel<0)calcSel=firstEmpty();
-                    render();
+                    if(!p.equals(page)){
+                        if("Calculate".equals(p)&&calcSel<0)calcSel=firstEmpty();
+                        go(p);
+                    }
                 }
             });
         }
@@ -279,7 +306,11 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             button(st,"Disconnect",()->{userDisconnected=true;ble.disconnect();last=null;render();},true);
         }
         LinearLayout display=card(content);label(display,"Latest reading");
-        display.addView(text(last==null?"—":last.display(),46,WHITE,true));gap(display,8);
+        TextView big=text(last==null?"—":last.display(),46,WHITE,true);display.addView(big);gap(display,8);
+        if(last!=null&&last!=popShown){
+            popShown=last;big.setScaleX(1.14f);big.setScaleY(1.14f);big.setPivotX(0f);
+            big.animate().scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(new OvershootInterpolator(2.2f)).start();
+        }
         if(offsetMm!=0)line(display,"Offset "+offsetText()+" applied");
         if(last==null)line(display,"No reading yet. Press the measure button on your IR40.");
         else{
@@ -772,9 +803,18 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         try{startActivityForResult(i,PHOTO_CAPTURE);}
         catch(ActivityNotFoundException e){notice("No camera app found. Use Choose from gallery instead.");}
     }
+    /** A new photo goes straight onto the annotation page, ready for its first measurement. */
+    private void useNewPhoto(Uri uri){
+        photoUri=uri;photoBmp=null;
+        photoVals[0]="";photoVals[1]="";photoVals[2]="";photoSel=0;resetPhotoPts();
+        getPreferences(MODE_PRIVATE).edit().putString("photo_uri",uri.toString()).apply();
+        Toast.makeText(this,"Photo added. Press measure on your IR40 for Width.",Toast.LENGTH_LONG).show();
+        go("Photo");
+    }
     private void handleCapture(int result){
         File src=PhotoProvider.captureFile(this);
-        if(result!=RESULT_OK||src.length()==0)return;
+        if(result!=RESULT_OK)return;
+        if(src.length()==0){notice("The camera did not return a photo. Try again, or use Choose from gallery.");return;}
         try{
             File dir=new File(getFilesDir(),"photos");dir.mkdirs();
             File dest=new File(dir,"IMG_"+System.currentTimeMillis()+".jpg");
@@ -788,9 +828,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 Arrays.sort(all,(x,y)->Long.compare(x.lastModified(),y.lastModified()));
                 for(int k=0;k<all.length-10;k++)all[k].delete();
             }
-            photoUri=Uri.fromFile(dest);photoBmp=null;
-            getPreferences(MODE_PRIVATE).edit().putString("photo_uri",photoUri.toString()).apply();
-            render();
+            useNewPhoto(Uri.fromFile(dest));
         }catch(IOException e){notice("Cannot save photo: "+e.getMessage());}
     }
 
@@ -816,14 +854,45 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
         return b;
     }
+    private void loadPhotoPts(){
+        String v=getPreferences(MODE_PRIVATE).getString("photo_pts","");
+        String[] t=v.split(",");
+        if(t.length!=12)return;
+        try{for(int k=0;k<12;k++)photoPts[k/4][k%4]=Math.max(0f,Math.min(1f,Float.parseFloat(t[k])));}
+        catch(NumberFormatException ignored){}
+    }
+    private void savePhotoPts(){
+        StringBuilder b=new StringBuilder();
+        for(int k=0;k<12;k++){if(k>0)b.append(',');b.append(photoPts[k/4][k%4]);}
+        getPreferences(MODE_PRIVATE).edit().putString("photo_pts",b.toString()).apply();
+    }
+    private void resetPhotoPts(){
+        float[][] def={{.14f,.90f,.93f,.90f},{.07f,.08f,.07f,.84f},{.72f,.68f,.90f,.46f}};
+        for(int a=0;a<3;a++)System.arraycopy(def[a],0,photoPts[a],0,4);
+        savePhotoPts();
+    }
+    private void arrowHead(Canvas c,Paint p,float tipX,float tipY,float dirX,float dirY,float size){
+        float nx=-dirY,ny=dirX;
+        Path t=new Path();t.moveTo(tipX,tipY);
+        t.lineTo(tipX-dirX*size*1.7f+nx*size*.62f,tipY-dirY*size*1.7f+ny*size*.62f);
+        t.lineTo(tipX-dirX*size*1.7f-nx*size*.62f,tipY-dirY*size*1.7f-ny*size*.62f);
+        t.close();c.drawPath(t,p);
+    }
+    /** Engineering style dimension line: end bars, filled arrowheads, dark outline for any background. */
     private void dimLine(Canvas c,Paint shadow,Paint line,float x1,float y1,float x2,float y2,float tick){
         float dx=x2-x1,dy=y2-y1,len=(float)Math.hypot(dx,dy);
-        if(len<1)return;
-        float px=-dy/len*tick,py=dx/len*tick;
-        for(Paint p:new Paint[]{shadow,line}){
-            c.drawLine(x1,y1,x2,y2,p);
-            c.drawLine(x1-px,y1-py,x1+px,y1+py,p);
-            c.drawLine(x2-px,y2-py,x2+px,y2+py,p);
+        if(len<tick*3)return;
+        float ux=dx/len,uy=dy/len,ah=tick*.62f;
+        Paint sf=new Paint(shadow);sf.setStyle(Paint.Style.FILL_AND_STROKE);sf.setStrokeJoin(Paint.Join.ROUND);
+        Paint lf=new Paint(line);lf.setStyle(Paint.Style.FILL);
+        float nx=-uy*tick,ny=ux*tick;
+        for(int pass=0;pass<2;pass++){
+            Paint sp=pass==0?shadow:line,fp=pass==0?sf:lf;
+            c.drawLine(x1+ux*ah*1.5f,y1+uy*ah*1.5f,x2-ux*ah*1.5f,y2-uy*ah*1.5f,sp);
+            c.drawLine(x1-nx,y1-ny,x1+nx,y1+ny,sp);
+            c.drawLine(x2-nx,y2-ny,x2+nx,y2+ny,sp);
+            arrowHead(c,fp,x1,y1,-ux,-uy,ah);
+            arrowHead(c,fp,x2,y2,ux,uy,ah);
         }
     }
     private void pillLabel(Canvas c,Paint pill,Paint txt,String s,float cx,float cy,float ts,int w,int h){
@@ -831,41 +900,36 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         cx=Math.max(half+4,Math.min(w-half-4,cx));
         cy=Math.max(ts*0.5f+pad+4,Math.min(h-ts*0.5f-pad-4,cy));
         RectF r=new RectF(cx-half,cy-ts*0.5f-pad,cx+half,cy+ts*0.5f+pad);
+        Paint edge=new Paint(Paint.ANTI_ALIAS_FLAG);edge.setStyle(Paint.Style.STROKE);
+        edge.setColor(Color.rgb(255,224,0));edge.setStrokeWidth(Math.max(2f,ts/12f));
         c.drawRoundRect(r,ts*0.6f,ts*0.6f,pill);
+        c.drawRoundRect(r,ts*0.6f,ts*0.6f,edge);
         c.drawText(s,cx,cy+ts*0.35f,txt);
     }
-    /** Draws the dimension lines and legible labels. Shared by the live preview and the JPEG export. */
+    /** Draws the dimension lines and labels, centred on each line. Shared by the live preview and the JPEG export. */
     private void drawDims(Canvas c,int w,int h,String[] v,String caption){
         float base=Math.min(w,h);
-        float m=base*0.07f,stroke=Math.max(4f,base/160f),ts=Math.max(22f,base/17f),tick=base/40f;
+        float stroke=Math.max(4f,base/190f),ts=Math.max(22f,base/20f),tick=base/42f;
         Paint line=new Paint(Paint.ANTI_ALIAS_FLAG);line.setStrokeCap(Paint.Cap.ROUND);
         Paint shadow=new Paint(line);
-        shadow.setColor(Color.argb(210,0,0,0));shadow.setStrokeWidth(stroke*2.4f);
+        shadow.setColor(Color.argb(215,0,0,0));shadow.setStrokeWidth(stroke*2.5f);
         line.setColor(Color.rgb(255,224,0));line.setStrokeWidth(stroke);
-        Paint pill=new Paint(Paint.ANTI_ALIAS_FLAG);pill.setColor(Color.argb(220,0,0,0));
+        Paint pill=new Paint(Paint.ANTI_ALIAS_FLAG);pill.setColor(Color.argb(225,10,14,22));
         Paint txt=new Paint(Paint.ANTI_ALIAS_FLAG);txt.setColor(Color.WHITE);txt.setTextSize(ts);
         txt.setTypeface(Typeface.DEFAULT_BOLD);txt.setTextAlign(Paint.Align.CENTER);
-        if(!v[0].isEmpty()){
-            float x1=m*2.2f,x2=w-m,y=h-m*1.3f;
-            dimLine(c,shadow,line,x1,y,x2,y,tick);
-            pillLabel(c,pill,txt,"Width "+v[0]+" m",(x1+x2)/2f,y-ts*1.5f,ts,w,h);
-        }
-        if(!v[1].isEmpty()){
-            float x=m*1.3f,y1=m*1.6f,y2=h-m*2.2f;
-            String s="Height "+v[1]+" m";
-            dimLine(c,shadow,line,x,y1,x,y2,tick);
-            pillLabel(c,pill,txt,s,x+txt.measureText(s)/2+ts*1.2f,(y1+y2)/2f,ts,w,h);
-        }
-        if(!v[2].isEmpty()){
-            float x1=w-m*4.6f,y1=h*0.64f,x2=w-m*1.8f,y2=h*0.42f;
+        for(int i=0;i<3;i++){
+            if(v[i].isEmpty())continue;
+            float[] q=photoPts[i];
+            float x1=q[0]*w,y1=q[1]*h,x2=q[2]*w,y2=q[3]*h;
             dimLine(c,shadow,line,x1,y1,x2,y2,tick);
-            pillLabel(c,pill,txt,"Depth "+v[2]+" m",(x1+x2)/2f-ts*2f,(y1+y2)/2f-ts*1.5f,ts,w,h);
+            pillLabel(c,pill,txt,DIM_NAMES[i]+" "+v[i]+" m",(x1+x2)/2f,(y1+y2)/2f,ts,w,h);
         }
         if(caption!=null&&!caption.isEmpty())
-            pillLabel(c,pill,txt,caption,w/2f,m*0.9f+ts*0.6f,ts,w,h);
+            pillLabel(c,pill,txt,caption,w/2f,base*0.07f+ts*0.6f,ts,w,h);
     }
     private final class AnnotView extends View{
-        private final Bitmap bmp;
+        private final Bitmap bmp;private int dragDim=-1,dragEnd=0;
+        private final Paint hp=new Paint(Paint.ANTI_ALIAS_FLAG);
         AnnotView(Context c,Bitmap b){super(c);bmp=b;}
         @Override protected void onMeasure(int wSpec,int hSpec){
             int w=MeasureSpec.getSize(wSpec);
@@ -875,6 +939,44 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             super.onDraw(c);
             c.drawBitmap(bmp,null,new Rect(0,0,getWidth(),getHeight()),null);
             drawDims(c,getWidth(),getHeight(),photoVals,photoLabel);
+            for(int i=0;i<3;i++){
+                if(photoVals[i].isEmpty())continue;
+                for(int e=0;e<2;e++){
+                    float x=photoPts[i][e*2]*getWidth(),y=photoPts[i][e*2+1]*getHeight();
+                    boolean on=i==dragDim&&e==dragEnd;
+                    hp.setStyle(Paint.Style.FILL);hp.setColor(Color.argb(on?255:200,26,126,241));
+                    c.drawCircle(x,y,dp(on?13:10),hp);
+                    hp.setStyle(Paint.Style.STROKE);hp.setStrokeWidth(dp(2));hp.setColor(Color.WHITE);
+                    c.drawCircle(x,y,dp(on?13:10),hp);
+                }
+            }
+        }
+        @Override public boolean onTouchEvent(MotionEvent ev){
+            float x=ev.getX(),y=ev.getY();
+            switch(ev.getAction()){
+                case MotionEvent.ACTION_DOWN:{
+                    float best=dp(34);dragDim=-1;
+                    for(int i=0;i<3;i++){
+                        if(photoVals[i].isEmpty())continue;
+                        for(int e=0;e<2;e++){
+                            float d=(float)Math.hypot(x-photoPts[i][e*2]*getWidth(),y-photoPts[i][e*2+1]*getHeight());
+                            if(d<best){best=d;dragDim=i;dragEnd=e;}
+                        }
+                    }
+                    if(dragDim<0)return false;
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    invalidate();return true;
+                }
+                case MotionEvent.ACTION_MOVE:
+                    if(dragDim<0)return false;
+                    photoPts[dragDim][dragEnd*2]=Math.max(0f,Math.min(1f,x/getWidth()));
+                    photoPts[dragDim][dragEnd*2+1]=Math.max(0f,Math.min(1f,y/getHeight()));
+                    invalidate();return true;
+                case MotionEvent.ACTION_UP:case MotionEvent.ACTION_CANCEL:
+                    if(dragDim>=0){dragDim=-1;savePhotoPts();invalidate();}
+                    return true;
+            }
+            return true;
         }
     }
     private void typePhotoValue(int i){
@@ -921,16 +1023,39 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         for(int k=1;k<=3;k++){int j=(done+k)%3;if(photoVals[j].isEmpty()){photoSel=j;break;}}
         render();
     }
+    private void recentPhotos(){
+        File[] all=new File(getFilesDir(),"photos").listFiles();
+        if(all==null||all.length==0)return;
+        Arrays.sort(all,(x,y)->Long.compare(y.lastModified(),x.lastModified()));
+        LinearLayout box=card(content);label(box,"Recent photos");
+        HorizontalScrollView hs=new HorizontalScrollView(this);hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout row=horizontal();hs.addView(row);box.addView(hs);
+        for(int k=0;k<Math.min(8,all.length);k++){
+            File f=all[k];
+            BitmapFactory.Options o=new BitmapFactory.Options();o.inSampleSize=16;
+            Bitmap t=BitmapFactory.decodeFile(f.getPath(),o);
+            if(t==null)continue;
+            ImageView iv=new ImageView(this);iv.setImageBitmap(t);iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            boolean cur=photoUri!=null&&Uri.fromFile(f).equals(photoUri);
+            GradientDrawable ring=bg(Color.TRANSPARENT,8);ring.setStroke(dp(cur?3:1),cur?BLUE:BORDER);iv.setForeground(ring);
+            iv.setClipToOutline(true);iv.setBackground(bg(BORDER,8));
+            iv.setOnTouchListener(pressFx);
+            iv.setOnClickListener(v->{photoUri=Uri.fromFile(f);photoBmp=null;
+                getPreferences(MODE_PRIVATE).edit().putString("photo_uri",photoUri.toString()).apply();render();});
+            LinearLayout.LayoutParams p=lp(84,84);p.rightMargin=dp(8);row.addView(iv,p);
+        }
+    }
     private void showPhoto(){
         section("Photo annotation");
         LinearLayout how=card(content);
-        how.addView(text("1. Take or choose a photo (use the original, not an exported one)\n2. Tap Width, Height or Depth\n3. Press measure on your IR40. The label appears on the photo.\n4. Export the annotated JPEG.",15,WHITE,false));
+        how.addView(text("1. Take or choose a photo. A new photo is added here automatically.\n2. Tap Width, Height or Depth, then press measure on your IR40.\n3. Drag the blue handles to place each line on the object.\n4. Export the annotated JPEG, or include it in your report.",15,WHITE,false));
         button(content,"Take a photo",this::takePhoto,false);
         button(content,"Choose from gallery",()->{
             Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*")
                 .addCategory(Intent.CATEGORY_OPENABLE);
             startActivityForResult(i,PHOTO_PICK);
         },true);
+        recentPhotos();
         if(photoUri!=null&&photoBmp==null){
             try{photoBmp=loadPhoto(1600);}catch(Exception e){notice("Cannot open photo: "+e.getMessage());}
         }
@@ -952,6 +1077,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 createDocument("image/jpeg","Blake-annotated-measurement.jpg",SAVE_PHOTO);
             }catch(Exception e){notice("Image export failed: "+e.getMessage());}
         },false);
+        button(content,"Reset line positions",()->{resetPhotoPts();render();},true);
         button(content,"Clear all measurements",()->{
             photoVals[0]="";photoVals[1]="";photoVals[2]="";photoSel=0;render();
         },true);
@@ -981,7 +1107,29 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         line(cal,offsetMm==0?"No offset. Readings are exactly what the IR40 reports.":"Offset "+offsetText()+" is added to every distance reading.");
         button(cal,"Set offset (mm)",this::askOffset,false);
         if(offsetMm!=0)button(cal,"Remove offset",()->{setOffset(0);render();},true);
-        button(cal,"Check accuracy",()->{page="Accuracy";render();},true);
+        button(cal,"Check accuracy",()->go("Accuracy"),true);
+        LinearLayout br=card(content);label(br,"Report branding");
+        line(br,"Your details appear on printed and PDF reports. Add your own logo to present reports as yours.");
+        EditText bizName=input(br,"Business name",prefs().getString("biz_name",""));
+        EditText bizBy=input(br,"Prepared by",prefs().getString("biz_by",""));
+        EditText bizRef=input(br,"Job or customer reference",prefs().getString("biz_ref",""));
+        File logoFile=new File(getFilesDir(),"business_logo.png");
+        if(logoFile.exists()){
+            ImageView lv=new ImageView(this);lv.setImageBitmap(BitmapFactory.decodeFile(logoFile.getPath()));
+            lv.setAdjustViewBounds(true);lv.setBackgroundColor(Color.WHITE);pad(lv,12,10);
+            br.addView(lv,lp(-1,90));gap(br,8);
+        }
+        button(br,"Save details",()->{
+            prefs().edit().putString("biz_name",bizName.getText().toString().trim())
+                .putString("biz_by",bizBy.getText().toString().trim())
+                .putString("biz_ref",bizRef.getText().toString().trim()).apply();
+            notice("Report details saved");
+        },false);
+        button(br,logoFile.exists()?"Change business logo":"Add business logo",()->{
+            Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(i,BUSINESS_LOGO);
+        },true);
+        if(logoFile.exists())button(br,"Remove business logo",()->{logoFile.delete();render();},true);
         LinearLayout ex=card(content);label(ex,"Reports · selected project");
         button(ex,"Export CSV",()->{
             pendingFile=csv().getBytes(StandardCharsets.UTF_8);
@@ -991,6 +1139,12 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             try{pendingFile=pdf();createDocument("application/pdf","Blake-RangeFinder-report.pdf",SAVE_PDF);}
             catch(Exception e){notice("PDF generation failed: "+e.getMessage());}
         },false);
+        button(ex,"Print report",()->{
+            try{printReport(pdf());}catch(Exception e){notice("Print failed: "+e.getMessage());}
+        },false);
+        button(ex,"Include annotated photo: "+(prefs().getBoolean("rep_photo",true)?"ON":"OFF"),()->{
+            prefs().edit().putBoolean("rep_photo",!prefs().getBoolean("rep_photo",true)).apply();render();
+        },true);
         button(ex,"Backup all projects (JSON)",()->{
             pendingFile=store.exportJson().getBytes(StandardCharsets.UTF_8);
             createDocument("application/json","Blake-RangeFinder-backup.json",SAVE_BACKUP);
@@ -1028,41 +1182,63 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
         return b.toString();
     }
+    private SharedPreferences prefs(){return getPreferences(MODE_PRIVATE);}
+    private void saveBusinessLogo(Uri uri)throws IOException{
+        BitmapFactory.Options o=new BitmapFactory.Options();o.inJustDecodeBounds=true;
+        try(InputStream in=getContentResolver().openInputStream(uri)){BitmapFactory.decodeStream(in,null,o);}
+        int sample=1;while(Math.max(o.outWidth,o.outHeight)/sample>900)sample*=2;
+        BitmapFactory.Options d=new BitmapFactory.Options();d.inSampleSize=sample;
+        Bitmap b;
+        try(InputStream in=getContentResolver().openInputStream(uri)){b=BitmapFactory.decodeStream(in,null,d);}
+        if(b==null)throw new IOException("Unreadable image");
+        try(OutputStream out=new FileOutputStream(new File(getFilesDir(),"business_logo.png"))){
+            b.compress(Bitmap.CompressFormat.PNG,100,out);
+        }
+    }
     private byte[] pdf()throws IOException{
-        android.graphics.pdf.PdfDocument doc=new android.graphics.pdf.PdfDocument();
-        Paint paint=new Paint(3);int pageNo=0,y=0;
-        android.graphics.pdf.PdfDocument.Page page=null;
-        Canvas canvas=null;
-        ArrayList<String> lines=new ArrayList<>();
-        lines.add("Blake UK · RangeFinder Pro");
-        lines.add("Measurement report");
-        lines.add("Project: "+projectName(store.active()));
-        lines.add("Created: "+DateFormat.getDateTimeInstance().format(new Date()));
-        lines.add("");
+        ReportPdf.Data d=new ReportPdf.Data();
+        d.business=prefs().getString("biz_name","");d.preparedBy=prefs().getString("biz_by","");
+        d.jobRef=prefs().getString("biz_ref","");d.project=projectName(store.active());
+        d.dateText=DateFormat.getDateTimeInstance(DateFormat.LONG,DateFormat.SHORT,Locale.UK).format(new Date());
+        File logo=new File(getFilesDir(),"business_logo.png");
+        if(logo.exists())d.businessLogo=BitmapFactory.decodeFile(logo.getPath());
+        d.blakeLogo=BitmapFactory.decodeResource(getResources(),R.drawable.blake_logo);
+        d.rows=new ArrayList<>();
         JSONArray arr=store.records();int n=0;
         for(int i=0;i<arr.length();i++){
             JSONObject v=arr.optJSONObject(i);
             if(v==null||!store.active().equals(v.optString("projectId")))continue;
-            lines.add((++n)+". "+v.optString("kind")+"   "+fmt(v.optDouble("metres"))+" "+unitSuffix(v));
+            d.rows.add(new String[]{String.valueOf(++n),
+                DateFormat.getDateTimeInstance(DateFormat.MEDIUM,DateFormat.SHORT,Locale.UK).format(new Date(v.optLong("time"))),
+                v.optString("kind"),fmt(v.optDouble("metres"))+" "+unitSuffix(v),v.optString("notes")});
         }
-        lines.add("");lines.add("Verify critical measurements against the physical IR40 display.");
-        for(String l:lines){
-            if(page==null||y>790){
-                if(page!=null)doc.finishPage(page);
-                page=doc.startPage(new android.graphics.pdf.PdfDocument.PageInfo.Builder(595,842,++pageNo).create());
-                canvas=page.getCanvas();canvas.drawColor(Color.WHITE);y=60;
-                Bitmap logo=BitmapFactory.decodeResource(getResources(),R.drawable.blake_logo);
-                if(logo!=null)canvas.drawBitmap(logo,null,new Rect(40,15,160,51),paint);
+        JSONObject plan=store.plans().optJSONObject(store.active());
+        if(plan!=null){d.planLength=plan.optDouble("length");d.planWidth=plan.optDouble("width");}
+        boolean measured=!photoVals[0].isEmpty()||!photoVals[1].isEmpty()||!photoVals[2].isEmpty();
+        if(photoUri!=null&&measured&&prefs().getBoolean("rep_photo",true)){
+            try{
+                Bitmap ph=loadPhoto(1600).copy(Bitmap.Config.ARGB_8888,true);
+                drawDims(new Canvas(ph),ph.getWidth(),ph.getHeight(),photoVals,photoLabel);
+                d.photo=ph;d.photoCaption=photoLabel;
+            }catch(Exception ignored){}
+        }
+        return ReportPdf.build(d);
+    }
+    private void printReport(final byte[] bytes){
+        PrintManager pm=(PrintManager)getSystemService(PRINT_SERVICE);
+        pm.print("Blake RangeFinder report",new PrintDocumentAdapter(){
+            @Override public void onLayout(PrintAttributes o,PrintAttributes n,CancellationSignal cs,LayoutResultCallback cb,Bundle b){
+                if(cs.isCanceled()){cb.onLayoutCancelled();return;}
+                cb.onLayoutFinished(new PrintDocumentInfo.Builder("Blake-RangeFinder-report.pdf")
+                    .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
+                    .setPageCount(PrintDocumentInfo.PAGE_COUNT_UNKNOWN).build(),true);
             }
-            paint.setColor(Color.rgb(30,42,59));
-            paint.setTextSize(y<140?17:11);
-            paint.setTypeface(y<140?Typeface.DEFAULT_BOLD:Typeface.DEFAULT);
-            canvas.drawText(l.length()>93?l.substring(0,93):l,40,y,paint);
-            y+=22;
-        }
-        if(page!=null)doc.finishPage(page);
-        ByteArrayOutputStream out=new ByteArrayOutputStream();
-        doc.writeTo(out);doc.close();return out.toByteArray();
+            @Override public void onWrite(PageRange[] pages,ParcelFileDescriptor dest,CancellationSignal cs,WriteResultCallback cb){
+                try(OutputStream out=new FileOutputStream(dest.getFileDescriptor())){
+                    out.write(bytes);out.flush();cb.onWriteFinished(new PageRange[]{PageRange.ALL_PAGES});
+                }catch(IOException e){cb.onWriteFailed(e.getMessage());}
+            }
+        },null);
     }
     private void createDocument(String mime,String name,int req){
         Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -1075,11 +1251,14 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         if(result!=RESULT_OK||data==null||data.getData()==null)return;
         Uri uri=data.getData();
         if(req==PHOTO_PICK){
-            photoUri=uri;photoBmp=null;
-            getPreferences(MODE_PRIVATE).edit().putString("photo_uri",uri.toString()).apply();
             try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}
             catch(Exception ignored){}
-            render();return;
+            useNewPhoto(uri);return;
+        }
+        if(req==BUSINESS_LOGO){
+            try{saveBusinessLogo(uri);notice("Business logo saved");render();}
+            catch(Exception e){notice("Cannot use that image: "+e.getMessage());}
+            return;
         }
         if(req==RESTORE_BACKUP){
             try(InputStream in=getContentResolver().openInputStream(uri)){
