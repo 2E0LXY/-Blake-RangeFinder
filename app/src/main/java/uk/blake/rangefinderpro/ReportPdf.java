@@ -163,7 +163,7 @@ final class ReportPdf {
         text(String.format(Locale.UK,"%.3f m²",d.planLength*d.planWidth),tx,y+46,14,INK,true);
         text("Perimeter",tx,y+70,8,GREY,true);
         text(String.format(Locale.UK,"%.3f m",2*(d.planLength+d.planWidth)),tx,y+86,14,INK,true);
-        y+=rh+40;
+        y+=Math.max(rh+40,100);
     }
     private void closing(){
         if(y>BOTTOM-60)newPage(false);

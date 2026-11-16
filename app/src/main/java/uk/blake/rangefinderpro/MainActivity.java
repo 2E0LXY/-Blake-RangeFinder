@@ -41,6 +41,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private String photoLabel="";private Bitmap photoBmp;private final String[] photoVals={"","",""};private int photoSel=0;
     private EditText lengthInput,widthInput;
     private boolean reconnect=true;
+    private String photoProject="";
     private boolean animateNext=false;private ObjectAnimator pulse;private Protocol.Measurement popShown;
     private final float[][] photoPts={{.14f,.90f,.93f,.90f},{.07f,.08f,.07f,.84f},{.72f,.68f,.90f,.46f}};
     private final View.OnTouchListener pressFx=(v,e)->{
@@ -805,7 +806,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     }
     /** A new photo goes straight onto the annotation page, ready for its first measurement. */
     private void useNewPhoto(Uri uri){
-        photoUri=uri;photoBmp=null;
+        photoUri=uri;photoBmp=null;photoProject=store.active();
         photoVals[0]="";photoVals[1]="";photoVals[2]="";photoSel=0;resetPhotoPts();
         getPreferences(MODE_PRIVATE).edit().putString("photo_uri",uri.toString()).apply();
         Toast.makeText(this,"Photo added. Press measure on your IR40 for Width.",Toast.LENGTH_LONG).show();
@@ -1017,7 +1018,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         if(!"Distance".equals(m.kind)){notice("Set the IR40 to normal distance mode, then measure again");return;}
         if(photoSel<0||photoSel>=3){notice("Tap Width, Height or Depth first, then press measure");return;}
         int done=photoSel;
-        photoVals[done]=fmt(m.value);
+        photoVals[done]=fmt(m.value);photoProject=store.active();
         Toast.makeText(this,DIM_NAMES[done]+" = "+fmt(m.value)+" m",Toast.LENGTH_SHORT).show();
         photoSel=-1;
         for(int k=1;k<=3;k++){int j=(done+k)%3;if(photoVals[j].isEmpty()){photoSel=j;break;}}
@@ -1040,7 +1041,8 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             GradientDrawable ring=bg(Color.TRANSPARENT,8);ring.setStroke(dp(cur?3:1),cur?BLUE:BORDER);iv.setForeground(ring);
             iv.setClipToOutline(true);iv.setBackground(bg(BORDER,8));
             iv.setOnTouchListener(pressFx);
-            iv.setOnClickListener(v->{photoUri=Uri.fromFile(f);photoBmp=null;
+            iv.setOnClickListener(v->{photoUri=Uri.fromFile(f);photoBmp=null;photoProject=store.active();
+                photoVals[0]="";photoVals[1]="";photoVals[2]="";photoSel=0;resetPhotoPts();
                 getPreferences(MODE_PRIVATE).edit().putString("photo_uri",photoUri.toString()).apply();render();});
             LinearLayout.LayoutParams p=lp(84,84);p.rightMargin=dp(8);row.addView(iv,p);
         }
@@ -1215,7 +1217,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         JSONObject plan=store.plans().optJSONObject(store.active());
         if(plan!=null){d.planLength=plan.optDouble("length");d.planWidth=plan.optDouble("width");}
         boolean measured=!photoVals[0].isEmpty()||!photoVals[1].isEmpty()||!photoVals[2].isEmpty();
-        if(photoUri!=null&&measured&&prefs().getBoolean("rep_photo",true)){
+        if(photoUri!=null&&measured&&store.active().equals(photoProject)&&prefs().getBoolean("rep_photo",true)){
             try{
                 Bitmap ph=loadPhoto(1600).copy(Bitmap.Config.ARGB_8888,true);
                 drawDims(new Canvas(ph),ph.getWidth(),ph.getHeight(),photoVals,photoLabel);
