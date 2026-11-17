@@ -77,6 +77,19 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         photoLabel=getPreferences(MODE_PRIVATE).getString("photo_caption","");
         loadPhotoPts();
         render();
+        if(b==null)showSplash();
+    }
+    private void showSplash(){
+        final FrameLayout s=new FrameLayout(this);s.setBackgroundColor(Color.WHITE);s.setClickable(true);
+        LinearLayout col=vertical();col.setGravity(Gravity.CENTER);
+        ImageView dev=new ImageView(this);dev.setImageResource(R.drawable.device_photo);dev.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        col.addView(dev,lp(260,300));
+        ImageView lg=new ImageView(this);lg.setImageResource(R.drawable.blake_logo_print);lg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams llp=lp(190,64);llp.topMargin=dp(18);col.addView(lg,llp);
+        s.addView(col,new FrameLayout.LayoutParams(-1,-1));
+        final ViewGroup decor=(ViewGroup)getWindow().getDecorView();
+        decor.addView(s,new ViewGroup.LayoutParams(-1,-1));
+        s.animate().alpha(0f).setStartDelay(1200).setDuration(350).withEndAction(()->decor.removeView(s)).start();
     }
     @Override protected void onResume(){super.onResume();ui.removeCallbacks(autoTick);ui.postDelayed(autoTick,400);}
     @Override protected void onPause(){ui.removeCallbacks(autoTick);super.onPause();}
@@ -232,7 +245,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo_ui);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.4.1 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.4.2 beta",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);
