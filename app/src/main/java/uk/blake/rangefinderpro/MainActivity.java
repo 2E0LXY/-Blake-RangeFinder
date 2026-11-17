@@ -229,7 +229,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         root=vertical();root.setBackgroundColor(NAVY);setContentView(root);
         attachSafeAreaInsets(root);
         LinearLayout header=horizontal();pad(header,17,9);
-        ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo);
+        ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo_ui);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
         names.addView(text("IR40 · 2.4.0 beta",11,MUTED,false));
@@ -1204,7 +1204,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         d.dateText=DateFormat.getDateTimeInstance(DateFormat.LONG,DateFormat.SHORT,Locale.UK).format(new Date());
         File logo=new File(getFilesDir(),"business_logo.png");
         if(logo.exists())d.businessLogo=BitmapFactory.decodeFile(logo.getPath());
-        d.blakeLogo=BitmapFactory.decodeResource(getResources(),R.drawable.blake_logo);
+        d.blakeLogo=BitmapFactory.decodeResource(getResources(),R.drawable.blake_logo_print);
         d.rows=new ArrayList<>();
         JSONArray arr=store.records();int n=0;
         for(int i=0;i<arr.length();i++){
