@@ -77,6 +77,19 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         photoLabel=getPreferences(MODE_PRIVATE).getString("photo_caption","");
         loadPhotoPts();
         render();
+        if(b==null)showSplash();
+    }
+    private void showSplash(){
+        final FrameLayout s=new FrameLayout(this);s.setBackgroundColor(Color.WHITE);s.setClickable(true);
+        LinearLayout col=vertical();col.setGravity(Gravity.CENTER);
+        ImageView dev=new ImageView(this);dev.setImageResource(R.drawable.device_photo);dev.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        col.addView(dev,lp(260,300));
+        ImageView lg=new ImageView(this);lg.setImageResource(R.drawable.blake_logo_print);lg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams llp=lp(190,64);llp.topMargin=dp(18);col.addView(lg,llp);
+        s.addView(col,new FrameLayout.LayoutParams(-1,-1));
+        final ViewGroup decor=(ViewGroup)getWindow().getDecorView();
+        decor.addView(s,new ViewGroup.LayoutParams(-1,-1));
+        s.animate().alpha(0f).setStartDelay(1200).setDuration(350).withEndAction(()->decor.removeView(s)).start();
     }
     @Override protected void onResume(){super.onResume();ui.removeCallbacks(autoTick);ui.postDelayed(autoTick,400);}
     @Override protected void onPause(){ui.removeCallbacks(autoTick);super.onPause();}
