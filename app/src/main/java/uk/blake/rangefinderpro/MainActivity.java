@@ -245,7 +245,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo_ui);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.4.1 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.4.2 beta",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);

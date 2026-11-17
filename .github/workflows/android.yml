@@ -54,15 +54,15 @@ jobs:
           "$SDK/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
           "$SDK/build-tools/35.0.0/zipalign" -c -p 4 "$APK"
           "$SDK/build-tools/35.0.0/aapt" dump badging "$APK" | grep -E 'package:|sdkVersion|targetSdkVersion'
-          cp "$APK" Blake-RangeFinder-Pro-2.4.1-beta.1-DEBUG.apk
-          sha256sum Blake-RangeFinder-Pro-2.4.1-beta.1-DEBUG.apk > SHA256SUMS
+          cp "$APK" Blake-RangeFinder-Pro-2.4.2-beta.1-DEBUG.apk
+          sha256sum Blake-RangeFinder-Pro-2.4.2-beta.1-DEBUG.apk > SHA256SUMS
 
       - name: Upload validated APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: Blake-RangeFinder-Pro-Android-beta
           path: |
-            Blake-RangeFinder-Pro-2.4.1-beta.1-DEBUG.apk
+            Blake-RangeFinder-Pro-2.4.2-beta.1-DEBUG.apk
             SHA256SUMS
           if-no-files-found: error
 
@@ -73,12 +73,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v2.4.1-beta.1"
+          TAG="v2.4.2-beta.1"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; preserving its immutable APK assets."
           else
-            gh release create "$TAG" Blake-RangeFinder-Pro-2.4.1-beta.1-DEBUG.apk SHA256SUMS \
-              --title "Blake RangeFinder Pro 2.4.1 beta (Android)" \
+            gh release create "$TAG" Blake-RangeFinder-Pro-2.4.2-beta.1-DEBUG.apk SHA256SUMS \
+              --title "Blake RangeFinder Pro 2.4.2 beta (Android)" \
               --notes "Debug-signed hardware-test beta. Built from native Android source and validated using apksigner and zipalign. FNIRSI IR40 live Bluetooth interoperability remains unverified. Keep the original app installed. Debug signing keys may differ between builds; install a stable release signing key before production deployment." \
               --prerelease \
               --target "$GITHUB_SHA"
