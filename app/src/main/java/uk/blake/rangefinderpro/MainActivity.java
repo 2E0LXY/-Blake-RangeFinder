@@ -6,7 +6,9 @@ import android.os.*;
 import android.content.*;
 import android.bluetooth.BluetoothDevice;
 import android.graphics.*;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.provider.MediaStore;
 import android.print.*;
@@ -43,6 +45,11 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private boolean reconnect=true;
     private String photoProject="";
     private boolean animateNext=false;private ObjectAnimator pulse;private Protocol.Measurement popShown;
+    // Motion state
+    private final ArrayList<Animator> loops=new ArrayList<>();
+    private static final String[] TABS={"Measure","Calculate","Projects","Plan","More"};
+    private int navDir=0,prevNavIdx=0,lastTint=0,popTile=-1,revealFrom=-1;
+    private boolean softNext=false,resultWasShown=false,popPlan=false,pendingNav=false;
     private final float[][] photoPts={{.14f,.90f,.93f,.90f},{.07f,.08f,.07f,.84f},{.72f,.68f,.90f,.46f}};
     private final View.OnTouchListener pressFx=(v,e)->{
         switch(e.getAction()){
@@ -86,10 +93,21 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         col.addView(dev,lp(260,300));
         ImageView lg=new ImageView(this);lg.setImageResource(R.drawable.blake_logo_print);lg.setScaleType(ImageView.ScaleType.FIT_CENTER);
         LinearLayout.LayoutParams llp=lp(190,64);llp.topMargin=dp(18);col.addView(lg,llp);
+        FrameLayout track=new FrameLayout(this);track.setBackground(bg(Color.rgb(228,234,242),2));
+        View bar=new View(this);bar.setBackground(bg(BLUE,2));bar.setPivotX(0f);bar.setScaleX(0f);
+        track.addView(bar,new FrameLayout.LayoutParams(-1,-1));
+        LinearLayout.LayoutParams tlp=lp(120,3);tlp.topMargin=dp(22);col.addView(track,tlp);
         s.addView(col,new FrameLayout.LayoutParams(-1,-1));
         final ViewGroup decor=(ViewGroup)getWindow().getDecorView();
         decor.addView(s,new ViewGroup.LayoutParams(-1,-1));
-        s.animate().alpha(0f).setStartDelay(1200).setDuration(350).withEndAction(()->decor.removeView(s)).start();
+        dev.setAlpha(0f);dev.setScaleX(.9f);dev.setScaleY(.9f);
+        dev.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(560).setInterpolator(new DecelerateInterpolator(1.8f)).start();
+        lg.setAlpha(0f);lg.setTranslationY(dp(14));
+        lg.animate().alpha(1f).translationY(0f).setStartDelay(240).setDuration(480).setInterpolator(new DecelerateInterpolator(1.8f)).start();
+        track.setAlpha(0f);track.animate().alpha(1f).setStartDelay(320).setDuration(300).start();
+        bar.animate().scaleX(1f).setStartDelay(320).setDuration(1000).setInterpolator(new AccelerateDecelerateInterpolator()).start();
+        s.animate().alpha(0f).scaleX(1.04f).scaleY(1.04f).setStartDelay(1450).setDuration(380)
+            .setInterpolator(new AccelerateInterpolator(1.2f)).withEndAction(()->decor.removeView(s)).start();
     }
     @Override protected void onResume(){super.onResume();ui.removeCallbacks(autoTick);ui.postDelayed(autoTick,400);}
     @Override protected void onPause(){ui.removeCallbacks(autoTick);super.onPause();}
@@ -160,7 +178,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private void line(LinearLayout parent,String value){parent.addView(text(value,15,WHITE,false));gap(parent,8);}
     private Button button(LinearLayout parent,String name,Runnable run,boolean secondary){
         Button b=new Button(this);b.setText(name);b.setAllCaps(false);b.setTextColor(WHITE);b.setTextSize(15);
-        b.setBackground(bg(secondary?BORDER:BLUE,10));b.setOnClickListener(v->run.run());b.setOnTouchListener(pressFx);
+        b.setBackground(ripple(bg(secondary?BORDER:BLUE,10),10));b.setOnClickListener(v->run.run());b.setOnTouchListener(pressFx);
         LinearLayout.LayoutParams p=lp(-1,52);p.bottomMargin=dp(8);parent.addView(b,p);return b;
     }
     private EditText input(LinearLayout into,String hint,String preset){
@@ -179,11 +197,38 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         catch(Exception ex){return Double.NaN;}
     }
     private void notice(String m){Toast.makeText(this,m,Toast.LENGTH_LONG).show();}
-    private void go(String p){page=p;animateNext=true;render();}
-    private void staggerIn(LinearLayout box){
-        for(int i=0;i<box.getChildCount();i++){
-            View v=box.getChildAt(i);v.setAlpha(0f);v.setTranslationY(dp(22));
-            v.animate().alpha(1f).translationY(0f).setStartDelay(Math.min(i,10)*55L).setDuration(380)
+    private Drawable ripple(Drawable content,int radius){
+        return new RippleDrawable(android.content.res.ColorStateList.valueOf(Color.argb(56,255,255,255)),content,bg(Color.WHITE,radius));
+    }
+    private void breathe(View v){
+        ObjectAnimator a=ObjectAnimator.ofFloat(v,"alpha",1f,.45f);a.setDuration(900);
+        a.setRepeatMode(ValueAnimator.REVERSE);a.setRepeatCount(ValueAnimator.INFINITE);
+        a.setInterpolator(new AccelerateDecelerateInterpolator());loops.add(a);a.start();
+    }
+    private void flashText(final TextView t,int from,int to,long ms){
+        ValueAnimator a=ValueAnimator.ofObject(new ArgbEvaluator(),from,to);a.setDuration(ms);
+        a.addUpdateListener(x->t.setTextColor((Integer)x.getAnimatedValue()));a.start();
+    }
+    private void popIn(View v,float from){
+        v.setAlpha(0f);v.setScaleX(from);v.setScaleY(from);
+        v.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(new OvershootInterpolator(1.8f)).start();
+    }
+    private int navIndex(String p){
+        for(int i=0;i<4;i++)if(TABS[i].equals(p))return i;
+        return 4;
+    }
+    private void go(String p){
+        navDir=Integer.signum(navIndex(p)-navIndex(page));
+        boolean same=p.equals(page);
+        page=p;animateNext=true;pendingNav=true;
+        if(!same&&content!=null&&content.isAttachedToWindow()){
+            content.animate().alpha(0f).translationX(-dp(12)*navDir).setDuration(90).withEndAction(()->{if(pendingNav)render();}).start();
+        }else render();
+    }
+    private void staggerIn(LinearLayout box,int from){
+        for(int i=from;i<box.getChildCount();i++){
+            View v=box.getChildAt(i);v.setAlpha(0f);v.setTranslationY(dp(18));v.setTranslationX(dp(14)*navDir);
+            v.animate().alpha(1f).translationY(0f).translationX(0f).setStartDelay(Math.min(i-from,10)*50L).setDuration(380)
                 .setInterpolator(new DecelerateInterpolator(1.6f)).start();
         }
     }
@@ -203,7 +248,13 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         String t=ready()?"●  Connected to IR40"
             :busy()?(connection.startsWith("Scanning")?"●  Searching for IR40…":"●  Connecting to IR40…")
             :"●  Not connected - tap here";
-        statusBar.setText(t);statusBar.setTextColor(WHITE);statusBar.setBackgroundColor(statusTint());
+        statusBar.setText(t);statusBar.setTextColor(WHITE);
+        final TextView sb=statusBar;int to=statusTint();
+        if(lastTint!=0&&lastTint!=to){
+            ValueAnimator a=ValueAnimator.ofObject(new ArgbEvaluator(),lastTint,to);a.setDuration(380);
+            a.addUpdateListener(x->sb.setBackgroundColor((Integer)x.getAnimatedValue()));a.start();
+        }else sb.setBackgroundColor(to);
+        lastTint=to;
     }
     private void requestBlePermissions(){
         if(Build.VERSION.SDK_INT>=31)
@@ -238,14 +289,17 @@ public final class MainActivity extends Activity implements BleClient.Callback {
 
     // ---------- layout ----------
     private void render(){
+        pendingNav=false;
         if(pulse!=null){pulse.cancel();pulse=null;}
+        for(Animator a:loops)a.cancel();
+        loops.clear();
         root=vertical();root.setBackgroundColor(NAVY);setContentView(root);
         attachSafeAreaInsets(root);
         LinearLayout header=horizontal();pad(header,17,9);
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo_ui);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.4.2 beta",11,MUTED,false));
+        names.addView(text("IR40 · 2.4.2 beta 2",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);
@@ -265,18 +319,43 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             case "Accuracy":showAccuracy();break;
             default:showMeasure();
         }
-        if(animateNext){animateNext=false;staggerIn(content);}
+        if(animateNext){animateNext=false;staggerIn(content,0);}
+        else if(revealFrom>=0){staggerIn(content,Math.min(revealFrom,content.getChildCount()));}
+        else if(softNext){content.setAlpha(.4f);content.animate().alpha(1f).setDuration(240).start();}
+        revealFrom=-1;softNext=false;
+        // Five equal-width navigation tabs fit without horizontal scrolling.
+        // Photo and Settings remain accessible under More.
+        final FrameLayout navWrap=new FrameLayout(this);navWrap.setBackgroundColor(CARD);
+        final int cur=navIndex(page),from=prevNavIdx;prevNavIdx=cur;
+        final View indicator=new View(this);indicator.setBackground(bg(BLUE,10));
+        final float est=(getResources().getDisplayMetrics().widthPixels-dp(10))/5f;
+        FrameLayout.LayoutParams ip=new FrameLayout.LayoutParams(Math.round(est-dp(4)),dp(52));ip.topMargin=dp(3);
+        navWrap.addView(indicator,ip);indicator.setTranslationX(dp(5)+from*est+dp(2));
+        indicator.animate().translationX(dp(5)+cur*est+dp(2)).setDuration(from==cur?0:300)
+            .setInterpolator(new DecelerateInterpolator(1.8f)).start();
+        navWrap.addOnLayoutChangeListener(new View.OnLayoutChangeListener(){
+            @Override public void onLayoutChange(View v,int l,int t,int r,int b,int oL,int oT,int oR,int oB){
+                int w=r-l;if(w<=0)return;
+                navWrap.removeOnLayoutChangeListener(this);
+                float slot=(w-dp(10))/5f;
+                ViewGroup.LayoutParams lpi=indicator.getLayoutParams();lpi.width=Math.round(slot-dp(4));
+                indicator.setLayoutParams(lpi);
+                indicator.animate().cancel();
+                indicator.setTranslationX(dp(5)+(from==cur?cur:from)*slot+dp(2));
+                indicator.animate().translationX(dp(5)+cur*slot+dp(2)).setDuration(from==cur?0:300)
+                    .setInterpolator(new DecelerateInterpolator(1.8f)).start();
+            }
+        });
         // Five equal-width navigation tabs fit without horizontal scrolling.
         // Photo and Settings remain accessible under More.
         LinearLayout nav=horizontal();
-        nav.setBackgroundColor(CARD);
         nav.setPadding(dp(5),dp(3),dp(5),dp(3));
-        for(String p:new String[]{"Measure","Calculate","Projects","Plan","More"}){
+        for(String p:TABS){
             boolean active=p.equals(page) || ("More".equals(p) &&
                 ("Photo".equals(page) || "Settings".equals(page) || "Accuracy".equals(page)));
             TextView tab=text(p,11,active?WHITE:MUTED,active);
             tab.setGravity(Gravity.CENTER);
-            tab.setBackground(bg(active?BLUE:CARD,10));
+            tab.setBackground(new RippleDrawable(android.content.res.ColorStateList.valueOf(Color.argb(56,255,255,255)),null,bg(Color.WHITE,10)));
             tab.setContentDescription(p+" tab");tab.setOnTouchListener(pressFx);
             LinearLayout.LayoutParams item=new LinearLayout.LayoutParams(0,dp(52),1);
             item.leftMargin=dp(2);item.rightMargin=dp(2);
@@ -295,7 +374,8 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 }
             });
         }
-        root.addView(nav,lp(-1,58));
+        navWrap.addView(nav,new FrameLayout.LayoutParams(-1,-1));
+        root.addView(navWrap,lp(-1,58));
     }
 
     // ---------- Measure ----------
@@ -313,7 +393,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 +("Disconnected".equals(connection)?"":"\n("+connection+")");
         st.addView(text(sub,15,WHITE,false));gap(st,10);
         if(!ok&&!wait)button(st,"Connect now",()->autoStart(true),false);
-        button(st,showConnection?"Hide connection options":"Connection options",()->{showConnection=!showConnection;render();},true);
+        button(st,showConnection?"Hide connection options":"Connection options",()->{showConnection=!showConnection;softNext=true;render();},true);
         if(showConnection){
             button(st,"Search again",()->autoStart(true),true);
             button(st,"Choose a different IR40 ("+ble.devices().size()+" found)",this::chooseDevice,true);
@@ -323,7 +403,9 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         TextView big=text(last==null?"—":last.display(),46,WHITE,true);display.addView(big);gap(display,8);
         if(last!=null&&last!=popShown){
             popShown=last;big.setScaleX(1.14f);big.setScaleY(1.14f);big.setPivotX(0f);
-            big.animate().scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(new OvershootInterpolator(2.2f)).start();
+            big.setAlpha(0f);big.setTranslationY(dp(10));
+            big.animate().scaleX(1f).scaleY(1f).alpha(1f).translationY(0f).setDuration(420).setInterpolator(new OvershootInterpolator(2.2f)).start();
+            flashText(big,BLUE,WHITE,750);
         }
         if(offsetMm!=0)line(display,"Offset "+offsetText()+" applied");
         if(last==null)line(display,"No reading yet. Press the measure button on your IR40.");
@@ -334,7 +416,10 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 try{store.addRecord(last,"IR40");render();}catch(Exception e){notice("Save failed: "+e.getMessage());}
             },false);
         }
-        button(content,showDetails?"Hide details":"Show details",()->{showDetails=!showDetails;render();},true);
+        final Button[] detailsBtn=new Button[1];
+        detailsBtn[0]=button(content,showDetails?"Hide details":"Show details",()->{
+            showDetails=!showDetails;if(showDetails)revealFrom=content.indexOfChild(detailsBtn[0])+1;render();
+        },true);
         if(showDetails){
             if(last!=null){
                 LinearLayout tech=card(content);label(tech,"Reading details");
@@ -475,14 +560,21 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     }
     private void calcTile(int i,String[] labels){
         boolean sel=i==calcSel,filled=!calcVal[i].isEmpty(),computed=!filled&&triIdx==i;
-        LinearLayout tile=horizontal();tile.setBackground(tileBg(sel));pad(tile,16,14);
+        LinearLayout tile=horizontal();tile.setBackground(ripple(tileBg(sel),14));pad(tile,16,14);tile.setOnTouchListener(pressFx);
         LinearLayout left=vertical();
         left.addView(text(labels[i].toUpperCase(Locale.UK),12,MUTED,true));gap(left,4);
         String value=filled?calcVal[i]+" m":computed?fmt(triVal)+" m":"—";
-        left.addView(text(value,32,computed?GREEN:WHITE,true));gap(left,4);
+        TextView valueView=text(value,32,computed?GREEN:WHITE,true);left.addView(valueView);gap(left,4);
+        if((filled&&i==popTile)||(computed&&!resultWasShown)){
+            valueView.setAlpha(0f);valueView.setTranslationY(dp(12));
+            valueView.animate().alpha(1f).translationY(0f).setStartDelay(computed?250:0).setDuration(380)
+                .setInterpolator(new DecelerateInterpolator(1.6f)).start();
+            flashText(valueView,computed?WHITE:BLUE,computed?GREEN:WHITE,800);
+        }
         String hint=sel?"● Waiting… press measure on your IR40"
             :filled?"Tap to measure again":computed?"Worked out for you":"Tap to select this box";
-        left.addView(text(hint,13,sel?BLUE:MUTED,sel));
+        TextView hintView=text(hint,13,sel?BLUE:MUTED,sel);left.addView(hintView);
+        if(sel)breathe(hintView);
         tile.addView(left,new LinearLayout.LayoutParams(0,-2,1));
         TextView type=text("Type",14,WHITE,true);type.setGravity(Gravity.CENTER);
         type.setBackground(bg(BORDER,10));
@@ -500,7 +592,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         for(int i=0;i<3;i++){
             final int idx=i;boolean on=calcMode==i;
             TextView t=text(names[i],15,on?WHITE:MUTED,on);t.setGravity(Gravity.CENTER);
-            t.setBackground(bg(on?BLUE:CARD,10));
+            t.setBackground(ripple(bg(on?BLUE:CARD,10),10));t.setOnTouchListener(pressFx);
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(48),1);
             p.rightMargin=dp(i<2?8:0);modes.addView(t,p);
             t.setOnClickListener(v->{if(calcMode!=idx){calcMode=idx;calcClear();}render();});
@@ -517,7 +609,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 else if(triIdx==i){st[i]=2;val[i]=triVal;}
                 else val[i]=Double.NaN;
             }
-            TriangleView tv=new TriangleView(this,st,val,calcSel,i->{calcSel=i;render();});
+            TriangleView tv=new TriangleView(this,st,val,calcSel,animateNext,i->{calcSel=i;render();});
             LinearLayout.LayoutParams tp=lp(-1,270);tp.bottomMargin=dp(10);content.addView(tv,tp);
         }
         for(int i=0;i<labels.length;i++)calcTile(i,labels);
@@ -526,10 +618,12 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             rc.addView(text(triError!=null?triError:"Fill in the boxes above to see the answer.",16,triError!=null?RED:MUTED,false));
             gap(rc,10);
         }else{
-            rc.addView(text(result[0],36,GREEN,true));gap(rc,8);line(rc,result[1]);
+            TextView rt=text(result[0],36,GREEN,true);rc.addView(rt);gap(rc,8);line(rc,result[1]);
+            if(!resultWasShown){rt.setPivotX(0f);popIn(rt,.8f);}
             button(rc,"Save result to project",()->saveCalc(),false);
         }
         button(rc,"Start again",()->{calcClear();render();},true);
+        resultWasShown=result!=null;popTile=-1;
     }
     private void saveCalc(){
         try{
@@ -552,7 +646,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         String[] labels=calcLabels();
         if(calcSel<0||calcSel>=labels.length){notice("Tap a box first, then press measure");return;}
         int filledIdx=calcSel;
-        setCalcVal(filledIdx,fmt(m.value));
+        setCalcVal(filledIdx,fmt(m.value));popTile=filledIdx;
         Toast.makeText(this,labels[filledIdx]+" = "+fmt(m.value)+" m",Toast.LENGTH_SHORT).show();
         calcSel=-1;
         if(filledCount()<calcNeeded()){
@@ -607,13 +701,13 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             double l=plan.optDouble("length"),w=plan.optDouble("width");
             if(l>0&&w>0){
                 c.addView(text("Area "+fmt(l*w)+" m²   Perimeter "+fmt(2*(l+w))+" m",17,GREEN,true));
-                gap(c,12);c.addView(new RoomView(this,l,w),lp(-1,230));gap(c,12);
+                gap(c,12);c.addView(new RoomView(this,l,w,animateNext||popPlan),lp(-1,230));popPlan=false;gap(c,12);
             }
         }
         button(c,"Save measured plan",()->{
             double l=positive(lengthInput),w=positive(widthInput);
             if(!Double.isFinite(Protocol.area(l,w))){notice("Enter two valid dimensions");return;}
-            store.setPlan(l,w);render();
+            store.setPlan(l,w);popPlan=true;render();
         },false);
         button(c,"Use last distance as length",()->{
             if(last==null||!"Distance".equals(last.kind)){notice("Take a distance measurement first");return;}
@@ -630,9 +724,17 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         private final java.util.function.IntConsumer onTap;
         private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
         private final float[] seg=new float[12];
-        TriangleView(Context c,int[] st,double[] v,int selected,java.util.function.IntConsumer tap){
+        private float prog=1f;
+        TriangleView(Context c,int[] st,double[] v,int selected,boolean intro,java.util.function.IntConsumer tap){
             super(c);state=st;val=v;sel=selected;onTap=tap;
+            if(intro){
+                prog=0f;
+                ValueAnimator a=ValueAnimator.ofFloat(0f,1f);a.setDuration(950);a.setStartDelay(180);
+                a.setInterpolator(new DecelerateInterpolator(1.3f));
+                a.addUpdateListener(x->{prog=(Float)x.getAnimatedValue();invalidate();});a.start();
+            }
         }
+        private int fade(int colour){return Color.argb(Math.round(Color.alpha(colour)*prog),Color.red(colour),Color.green(colour),Color.blue(colour));}
         private float d(float n){return n*getResources().getDisplayMetrics().density;}
         private int colour(int i){
             if(i==sel)return Color.rgb(26,126,241);
@@ -663,23 +765,24 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             seg[4]=x0;seg[5]=y0;seg[6]=x2;seg[7]=y2;          // B
             seg[8]=x1;seg[9]=y1;seg[10]=x2;seg[11]=y2;        // C
             Path fill=new Path();fill.moveTo(x0,y0);fill.lineTo(x1,y1);fill.lineTo(x2,y2);fill.close();
-            paint.setStyle(Paint.Style.FILL);paint.setColor(Color.rgb(24,36,54));c.drawPath(fill,paint);
+            paint.setStyle(Paint.Style.FILL);paint.setColor(fade(Color.rgb(24,36,54)));c.drawPath(fill,paint);
             paint.setStyle(Paint.Style.STROKE);paint.setStrokeCap(Paint.Cap.ROUND);
             for(int i=0;i<3;i++){
+                float p=Math.max(0f,Math.min(1f,prog*3f-i));if(p<=0f)continue;
                 paint.setColor(colour(i));paint.setStrokeWidth(d(i==sel?7:5));
-                c.drawLine(seg[i*4],seg[i*4+1],seg[i*4+2],seg[i*4+3],paint);
+                c.drawLine(seg[i*4],seg[i*4+1],seg[i*4]+(seg[i*4+2]-seg[i*4])*p,seg[i*4+1]+(seg[i*4+3]-seg[i*4+1])*p,paint);
             }
-            paint.setColor(Color.rgb(170,185,205));paint.setStrokeWidth(d(2));
+            paint.setColor(fade(Color.rgb(170,185,205)));paint.setStrokeWidth(d(2));
             float q=d(14);Path sq=new Path();sq.moveTo(x0,y0-q);sq.lineTo(x0+q,y0-q);sq.lineTo(x0+q,y0);c.drawPath(sq,paint);
             paint.setStyle(Paint.Style.FILL);paint.setTypeface(Typeface.DEFAULT_BOLD);paint.setTextSize(d(16));
-            paint.setColor(colour(0));paint.setTextAlign(Paint.Align.RIGHT);
+            paint.setColor(fade(colour(0)));paint.setTextAlign(Paint.Align.RIGHT);
             c.drawText(label(0),x0-d(12),(y0+y1)/2+d(6),paint);
-            paint.setColor(colour(1));paint.setTextAlign(Paint.Align.CENTER);
+            paint.setColor(fade(colour(1)));paint.setTextAlign(Paint.Align.CENTER);
             c.drawText(label(1),(x0+x2)/2,y0+d(28),paint);
             // C label: offset outwards from the right-angle corner
             float mx=(x1+x2)/2,my=(y1+y2)/2,nx=mx-x0,ny=my-y0,len=(float)Math.hypot(nx,ny);
             if(len>0){nx/=len;ny/=len;}
-            paint.setColor(colour(2));paint.setTextAlign(Paint.Align.CENTER);
+            paint.setColor(fade(colour(2)));paint.setTextAlign(Paint.Align.CENTER);
             float lx=Math.min(getWidth()-wC/2-d(4),Math.max(wC/2+d(4),mx+nx*d(30)));
             c.drawText(label(2),lx,my+ny*d(30)+d(6),paint);
         }
@@ -702,10 +805,19 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         }
     }
     private static final class RoomView extends View {
-        private final double l,w;private final Paint paint=new Paint(3);
-        RoomView(Context c,double length,double width){super(c);l=length;w=width;}
+        private final double l,w;private final Paint paint=new Paint(3);private float prog=1f;
+        RoomView(Context c,double length,double width,boolean intro){
+            super(c);l=length;w=width;
+            if(intro){
+                prog=0f;
+                ValueAnimator a=ValueAnimator.ofFloat(0f,1f);a.setDuration(750);a.setStartDelay(150);
+                a.setInterpolator(new DecelerateInterpolator(1.4f));
+                a.addUpdateListener(x->{prog=(Float)x.getAnimatedValue();invalidate();});a.start();
+            }
+        }
         @Override protected void onDraw(Canvas c){
             super.onDraw(c);
+            c.save();c.clipRect(0,0,getWidth()*prog,getHeight());
             float a=getWidth()-70,b=getHeight()-70;
             float scale=(float)Math.min(a/l,b/w);
             float rw=(float)(l*scale),rh=(float)(w*scale);
@@ -718,6 +830,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
             paint.setTextSize(28);c.drawText(String.format(Locale.UK,"%.2f m",l),x,y-10,paint);
             c.save();c.rotate(-90,x-12,y+rh);
             c.drawText(String.format(Locale.UK,"%.2f m",w),x-12,y+rh,paint);c.restore();
+            c.restore();
         }
     }
 
@@ -1011,12 +1124,13 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     }
     private void dimTile(int i){
         boolean sel=i==photoSel,filled=!photoVals[i].isEmpty();
-        LinearLayout tile=horizontal();tile.setBackground(tileBg(sel));pad(tile,16,12);
+        LinearLayout tile=horizontal();tile.setBackground(ripple(tileBg(sel),14));pad(tile,16,12);tile.setOnTouchListener(pressFx);
         LinearLayout left=vertical();
         left.addView(text(DIM_NAMES[i].toUpperCase(Locale.UK),12,MUTED,true));gap(left,2);
         left.addView(text(filled?photoVals[i]+" m":"—",28,WHITE,true));gap(left,2);
-        left.addView(text(sel?"● Waiting… press measure on your IR40"
-            :filled?"Tap to measure again":"Tap to select this box",13,sel?BLUE:MUTED,sel));
+        TextView dimHint=text(sel?"● Waiting… press measure on your IR40"
+            :filled?"Tap to measure again":"Tap to select this box",13,sel?BLUE:MUTED,sel);
+        left.addView(dimHint);if(sel)breathe(dimHint);
         tile.addView(left,new LinearLayout.LayoutParams(0,-2,1));
         TextView type=text("Type",14,WHITE,true);type.setGravity(Gravity.CENTER);
         type.setBackground(bg(BORDER,10));type.setOnClickListener(v->typePhotoValue(i));
@@ -1305,8 +1419,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
                 String addr=ble.connectedAddress();
                 if(!addr.isEmpty())getPreferences(MODE_PRIVATE).edit().putString("last_device",addr).apply();
             }
-            updateStatus();
-            if("Measure".equals(page))render();
+            if("Measure".equals(page))render();else updateStatus();
         });
     }
     @Override public void device(BluetoothDevice d,int rssi){
