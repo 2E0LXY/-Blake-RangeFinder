@@ -27,6 +27,17 @@ public final class Protocol {
             }
         }
         public String suffix() { return "Area".equals(kind)?"m²": "Volume".equals(kind)?"m³":"m"; }
+        /** Side-by-side values for device area, volume and Pythagoras modes; null when not applicable.
+         *  Side order (a, b, c = L1, L2, L3) follows the manual and is unverified on hardware. */
+        public String breakdown() {
+            switch(mode) {
+                case 3: return a>0&&b>0?String.format(Locale.UK,"L %.3f m · W %.3f m",a,b):null;
+                case 4: return a>0&&b>0&&c>0?String.format(Locale.UK,"L %.3f m · W %.3f m · H %.3f m",a,b,c):null;
+                case 5: return a>0&&b>0?String.format(Locale.UK,"L1 %.3f m · L2 %.3f m → L3 %.3f m",a,b,value):null;
+                case 6: case 7: return a>0&&b>0&&c>0?String.format(Locale.UK,"L1 %.3f m · L2 %.3f m · L3 %.3f m → L4 %.3f m",a,b,c,value):null;
+                default: return null;
+            }
+        }
         public String display() { return String.format(Locale.UK,"%.3f %s",value,suffix()); }
     }
     public static Measurement decode(byte[] packet) {

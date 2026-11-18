@@ -49,6 +49,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     private final ArrayList<Animator> loops=new ArrayList<>();
     private static final String[] TABS={"Measure","Calculate","Projects","Plan","More"};
     private int navDir=0,prevNavIdx=0,lastTint=0,popTile=-1,revealFrom=-1;
+    private Integer sessionUnit=null;
     private boolean softNext=false,resultWasShown=false,popPlan=false,pendingNav=false;
     private final float[][] photoPts={{.14f,.90f,.93f,.90f},{.07f,.08f,.07f,.84f},{.72f,.68f,.90f,.46f}};
     private final View.OnTouchListener pressFx=(v,e)->{
@@ -299,7 +300,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.blake_logo_ui);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);header.addView(logo,lp(125,46));
         LinearLayout names=vertical();names.addView(text("RangeFinder Pro",16,WHITE,true));
-        names.addView(text("IR40 · 2.4.2 beta 2",11,MUTED,false));
+        names.addView(text("IR40 · 2.4.2 beta 3",11,MUTED,false));
         LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(0,dp(48),1);
         np.leftMargin=dp(12);header.addView(names,np);root.addView(header,lp(-1,70));
         statusBar=text("",14,WHITE,true);statusBar.setGravity(Gravity.CENTER);
@@ -411,6 +412,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         if(last==null)line(display,"No reading yet. Press the measure button on your IR40.");
         else{
             if(!"Distance".equals(last.kind))line(display,"Type: "+last.kind);
+            String parts=last.breakdown();if(parts!=null)line(display,parts);
             line(display,store.autoSave()?"Saved automatically to "+projectName(store.active())+".":"Not saved yet.");
             if(!store.autoSave())button(display,"Save this reading",()->{
                 try{store.addRecord(last,"IR40");render();}catch(Exception e){notice("Save failed: "+e.getMessage());}
@@ -1414,7 +1416,7 @@ public final class MainActivity extends Activity implements BleClient.Callback {
     // ---------- BleClient callbacks ----------
     @Override public void state(String s){
         runOnUiThread(()->{
-            connection=s;if("Disconnected".equals(s))last=null;
+            connection=s;if("Disconnected".equals(s)){last=null;sessionUnit=null;}
             if(s.startsWith(READY_PREFIX)){
                 String addr=ble.connectedAddress();
                 if(!addr.isEmpty())getPreferences(MODE_PRIVATE).edit().putString("last_device",addr).apply();
@@ -1435,6 +1437,11 @@ public final class MainActivity extends Activity implements BleClient.Callback {
         final Protocol.Measurement m=adjust(incoming);
         runOnUiThread(()->{
             last=m;lastRaw=raw;sessionPackets++;
+            if(m.unitCode!=null){
+                if(sessionUnit!=null&&!sessionUnit.equals(m.unitCode))
+                    notice("IR40 unit code changed ("+sessionUnit+" to "+m.unitCode+"). Check the device is set to metres.");
+                sessionUnit=m.unitCode;
+            }
             if("Distance".equals(m.kind)){
                 sessionCount++;sessionSum+=m.value;
                 sessionMin=Double.isNaN(sessionMin)?m.value:Math.min(sessionMin,m.value);
